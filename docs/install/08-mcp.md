@@ -85,7 +85,7 @@ It archives the running config before sending and is capped by
 **With `WRITE_MODE=approved` (the default) there is no one-step push.** The AI
 gets `stage_device_change` and `commit_device_change` instead, and a person
 approves each change in between, through a path an agent's token cannot use:
-[../how-to/approve-changes.md](../how-to/approve-changes.md). The automation API
+[../how-to/run-changes.md](../how-to/run-changes.md). The automation API
 underneath has no authentication of its own, so it is published on loopback
 only (`AUTOMATION_BIND_IP`) and refuses a direct push in approved mode.
 

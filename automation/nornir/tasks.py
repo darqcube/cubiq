@@ -72,6 +72,10 @@ class DeviceError(RuntimeError):
     pass
 
 
+class DeviceChanged(DeviceError):
+    """The device's configuration is not the one a change was staged against. Nothing was sent."""
+
+
 def platforms() -> dict:
     with open(PLATFORMS_FILE) as fh:
         return yaml.safe_load(fh)
@@ -280,8 +284,13 @@ def _get_state(device: str, nr, command: str | None, raw: bool, own: bool) -> di
     return payload
 
 
-def put_config(device: str, lines: list[str]) -> dict:
-    """Push configuration lines, archiving the previous config first."""
+def put_config(device: str, lines: list[str], expect_digest: str | None = None) -> dict:
+    """Push configuration lines, archiving the previous config first.
+
+    expect_digest: the configuration digest (automation/changes/policy.config_digest) the change was staged against.
+    When the device's configuration no longer matches, DeviceChanged is raised and nothing is sent: the check uses the
+    archive fetch the push makes anyway, so it costs no extra session.
+    """
     max_lines = int(os.environ.get("MAX_CONFIG_LINES", "200"))
     if not lines:
         raise DeviceError("no configuration lines supplied")
@@ -295,15 +304,20 @@ def put_config(device: str, lines: list[str]) -> dict:
     # Serialised per device: a config push must not interleave with a
     # concurrent read on the same SSH session.
     with device_lock(device):
-        return _put_config(device, lines)
+        return _put_config(device, lines, expect_digest)
 
 
-def _put_config(device: str, lines: list[str]) -> dict:
+def _put_config(device: str, lines: list[str], expect_digest: str | None = None) -> dict:
     nr = get_nornir(device)
     try:
         # Archive before changing anything, so there is always something to
         # compare against and restore from.
         before_config = get_config(device, nr=nr)
+        if expect_digest is not None:
+            from automation.changes.policy import config_digest
+            if config_digest(before_config["config"]) != expect_digest:
+                raise DeviceChanged(f"{device}: its configuration changed since the change was staged; nothing was "
+                                    "sent. Stage the change again against the current configuration.")
 
         # Pre-change snapshot. Best-effort: a device with no TextFSM template
         # can still be configured, it just cannot be compared — and saying so

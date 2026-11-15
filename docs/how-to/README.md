@@ -39,7 +39,7 @@ files and commands. If you are looking for *what a component is*, see
 | Change retention, intervals or resource limits | [change-settings.md](change-settings.md) |
 | Add a whole new service to the stack | [add-a-service.md](add-a-service.md) |
 | Connect an AI platform | [connect-an-ai-platform.md](connect-an-ai-platform.md) |
-| Approve the device changes an AI asks for | [approve-changes.md](approve-changes.md) |
+| Run device changes: stage, then commit once | [run-changes.md](run-changes.md) |
 | Choose which alerts start an AI investigation (per device, interface, protocol) | [auto-investigate.md](auto-investigate.md) |
 | Script the stack from Python — assurance, state, config, intent, metrics, logs | [automate-with-python.md](automate-with-python.md) |
 | Deploy at a customer site (PoC or small production) | [deploy-on-customer-premises.md](deploy-on-customer-premises.md) |

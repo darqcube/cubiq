@@ -12,11 +12,21 @@ THE TWO RULES EVERY SERVER FOLLOWS
 
 WHO MAY CALL — MCP_AUTH_MODE
 
-  token   the shared MCP_AUTH_TOKEN (default). One secret, no identity.
-  oidc    the caller's own JWT from the ai-platform's identity provider,
-          checked against its JWKS. Every call is attributable to a person,
-          and roles in the token gate the write tool.
-  both    either. For cut-over, and for tooling on the VM that has the token.
+  token   two shared secrets (default): MCP_AUTH_TOKEN gives the read scope,
+          MCP_EXECUTE_TOKEN the execute scope. No identity, no provider.
+  oidc    the caller's own JWT from the connected platform's identity provider
+          (agenticops.yml access:), checked against its JWKS. Every call is
+          attributable; the token's client (azp) has the scope MCP_OIDC_CLIENT_SCOPES
+          names, any other the default (MCP_OIDC_DEFAULT_SCOPE: read or none).
+  both    either. For cut-over, and for tooling on the host that has the tokens.
+
+WHAT A SCOPE ALLOWS
+
+  read     every read tool
+  execute  also the tools that change a device (stage, commit, rollback, withdraw)
+
+That is all the stack decides. Whether a person approved a change, and who may
+ask for one, is the connected platform's policy: authentication only, here.
 """
 from __future__ import annotations
 
@@ -37,21 +47,34 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
 AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
+EXECUTE_TOKEN = os.environ.get("MCP_EXECUTE_TOKEN", "")
 AUTH_MODE = (os.environ.get("MCP_AUTH_MODE") or "token").strip().lower()
 OIDC_ISSUER = os.environ.get("MCP_OIDC_ISSUER", "").strip()
 OIDC_JWKS_URL = os.environ.get("MCP_OIDC_JWKS_URL", "").strip()
 OIDC_AUDIENCES = [a.strip() for a in os.environ.get("MCP_OIDC_AUDIENCES", "").split(",") if a.strip()]
-WRITE_ROLE = os.environ.get("MCP_WRITE_ROLE", "").strip() or "darqcube-write"
-# The claim naming the client a token was issued to — the calling agent, when
-# the ai-platform gives each agent its own client (token exchange). Recorded on
-# every change and in the audit line.
+# The claim naming the calling agent, when the platform gives each agent its own
+# client (token exchange). Recorded on every change and in the audit line.
 AGENT_CLAIM = os.environ.get("MCP_AGENT_CLAIM", "").strip() or "azp"
-# The claim saying when the person last typed their password (approvals need a fresh one). auth_time is the standard
-# one. iat is equivalent only when the approvals client issues no refresh tokens, so that every token it hands out comes
-# from a password typed at that moment: for a provider that records no auth_time on the password grant.
-SIGNIN_CLAIM = os.environ.get("CHANGE_FRESH_SIGNIN_CLAIM", "").strip() or "auth_time"
-if SIGNIN_CLAIM not in ("auth_time", "iat"):
-    raise SystemExit(f"CHANGE_FRESH_SIGNIN_CLAIM must be auth_time or iat (got {SIGNIN_CLAIM!r})")
+
+SCOPES = ("read", "execute")
+DEFAULT_SCOPE = (os.environ.get("MCP_OIDC_DEFAULT_SCOPE") or "read").strip().lower()
+
+
+def parse_client_scopes(raw: str) -> dict[str, str]:
+    """MCP_OIDC_CLIENT_SCOPES: "client-id=scope,…" (install.py writes it from agenticops.yml)."""
+    found: dict[str, str] = {}
+    for pair in (p.strip() for p in raw.split(",") if p.strip()):
+        client, sep, scope = pair.partition("=")
+        if not sep or not client.strip() or scope.strip().lower() not in SCOPES:
+            raise SystemExit(f"MCP_OIDC_CLIENT_SCOPES: {pair!r} — expected client-id=read or client-id=execute")
+        found[client.strip()] = scope.strip().lower()
+    return found
+
+
+CLIENT_SCOPES = parse_client_scopes(os.environ.get("MCP_OIDC_CLIENT_SCOPES", ""))
+if DEFAULT_SCOPE not in ("read", "none"):
+    raise SystemExit(f"MCP_OIDC_DEFAULT_SCOPE must be read or none (got {DEFAULT_SCOPE!r}): "
+                     "execute is given to named clients only")
 
 # 512 KiB suits a large model. A small local model's whole context can be
 # smaller than that, so a deployment can lower it (site.yml max_response_kb).
@@ -200,24 +223,29 @@ class AuthError(Exception):
 
 
 class Verifier:
-    """Decides who a bearer credential belongs to, per MCP_AUTH_MODE.
+    """Decides who a bearer credential belongs to, and its scope, per MCP_AUTH_MODE.
 
-    Returns a caller dict: {"user", "sub", "roles", "via"}. A token caller is
-    the operator: it holds the one secret the stack was installed with, so it
-    is trusted the way the shared token always has been.
+    Returns a caller dict: {"user", "sub", "via", "agent", "scope"}.
     """
 
     def __init__(self, mode: str = AUTH_MODE, token: str = AUTH_TOKEN, issuer: str = OIDC_ISSUER,
-                 jwks_url: str = OIDC_JWKS_URL, audiences: list[str] | None = None):
+                 jwks_url: str = OIDC_JWKS_URL, audiences: list[str] | None = None,
+                 execute_token: str = EXECUTE_TOKEN, client_scopes: dict[str, str] | None = None,
+                 default_scope: str = DEFAULT_SCOPE):
         if mode not in AUTH_MODES:
             raise SystemExit(f"MCP_AUTH_MODE must be one of {', '.join(AUTH_MODES)} (got {mode!r})")
         # Fail at startup, not at the first request: an empty token used to
         # mean "no auth at all", silently.
         if mode in ("token", "both") and not token:
             raise SystemExit(f"MCP_AUTH_MODE={mode} needs MCP_AUTH_TOKEN")
+        if execute_token and hmac.compare_digest(execute_token, token):
+            raise SystemExit("MCP_EXECUTE_TOKEN must differ from MCP_AUTH_TOKEN: the read token would execute")
         if mode in ("oidc", "both") and not (issuer and jwks_url):
             raise SystemExit(f"MCP_AUTH_MODE={mode} needs MCP_OIDC_ISSUER and MCP_OIDC_JWKS_URL")
         self.mode, self.token, self.issuer = mode, token, issuer
+        self.execute_token = execute_token
+        self.client_scopes = client_scopes if client_scopes is not None else CLIENT_SCOPES
+        self.default_scope = default_scope
         self.audiences = audiences if audiences is not None else OIDC_AUDIENCES
         self._jwks = None
         if mode in ("oidc", "both"):
@@ -233,8 +261,12 @@ class Verifier:
             raise AuthError("missing bearer credential")
         credential = header[7:].strip()
 
-        if self.mode in ("token", "both") and hmac.compare_digest(credential, self.token):
-            return {"user": "token", "sub": "token", "roles": ["*"], "via": "token", "agent": None, "auth_time": None}
+        if self.mode in ("token", "both"):
+            if hmac.compare_digest(credential, self.token):
+                return {"user": "token", "sub": "token", "via": "token", "agent": None, "scope": "read"}
+            if self.execute_token and hmac.compare_digest(credential, self.execute_token):
+                return {"user": "execute-token", "sub": "execute-token", "via": "token", "agent": None,
+                        "scope": "execute"}
         if self.mode == "token":
             raise AuthError("bad token")
         return self._verify_jwt(credential)
@@ -256,19 +288,17 @@ class Verifier:
         except jwt.InvalidTokenError as exc:
             raise AuthError(f"invalid token: {exc}") from exc
 
-        roles = set((claims.get("realm_access") or {}).get("roles") or [])
-        for client in (claims.get("resource_access") or {}).values():
-            roles |= set((client or {}).get("roles") or [])
-        roles |= set(claims.get("roles") or [])
-        auth_time = claims.get(SIGNIN_CLAIM)
+        # The client the token was issued to decides the scope: never a role, a group or a person's name.
+        client = claims.get("azp") or claims.get("client_id")
+        scope = self.client_scopes.get(client, self.default_scope) if isinstance(client, str) else self.default_scope
+        if scope not in SCOPES:
+            raise AuthError(f"client {client!r} has no scope here")
         return {
             "user": claims.get("preferred_username") or claims.get("email") or claims["sub"],
             "sub": claims["sub"],
-            "roles": sorted(roles),
             "via": "oidc",
             "agent": claims.get(AGENT_CLAIM) if isinstance(claims.get(AGENT_CLAIM), str) else None,
-            # When the person last typed their password: an approval needs a fresh one.
-            "auth_time": auth_time if isinstance(auth_time, (int, float)) else None,
+            "scope": scope,
         }
 
 
@@ -317,8 +347,8 @@ class _Auth:
         await self.app(scope, recording_receive, send)
         # Prefixed so `grep audit` finds it whatever log format is active —
         # the MCP SDK configures a bare %(message)s format.
-        log.info("audit user=%s sub=%s via=%s agent=%s server=%s %s", caller["user"], caller["sub"],
-                 caller["via"], caller.get("agent") or "-", self.server, _rpc_summary(bytes(body)))
+        log.info("audit user=%s sub=%s via=%s agent=%s scope=%s server=%s %s", caller["user"], caller["sub"],
+                 caller["via"], caller.get("agent") or "-", caller["scope"], self.server, _rpc_summary(bytes(body)))
 
 
 def _rpc_summary(body: bytes) -> str:
@@ -347,17 +377,13 @@ def caller(ctx: Context) -> dict:
     return found
 
 
-def require_role(ctx: Context, role: str = WRITE_ROLE) -> dict:
-    """Refuse the call unless the caller holds `role`.
-
-    A token caller passes: the shared token is the operator's own credential.
-    An OIDC caller must carry the role in their token — which is what lets the
-    same tool be allowed for one person and refused for another.
-    """
+def require_scope(ctx: Context, scope: str = "execute") -> dict:
+    """Refuse the call unless the caller's credential has `scope` (execute covers read)."""
     who = caller(ctx)
-    if "*" in who["roles"] or role in who["roles"]:
+    if who["scope"] == scope or who["scope"] == "execute":
         return who
-    raise PermissionError(f"{who['user']} lacks the '{role}' role this tool requires")
+    raise PermissionError(f"{who['user']} has the {who['scope']} scope; this tool needs {scope} "
+                          "(the execute token, or a client agenticops.yml gives execute)")
 
 
 # --- the server ------------------------------------------------------------

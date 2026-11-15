@@ -132,7 +132,7 @@ Everything except Grafana and Infrahub is unauthenticated. The automation API
 is therefore published on loopback only (`AUTOMATION_BIND_IP`), and with
 `WRITE_MODE=approved` (the default) it refuses a direct push anyway: a device
 change is staged, approved by a person and committed
-([how-to/approve-changes.md](how-to/approve-changes.md)). Keep the other ports on
+([how-to/run-changes.md](how-to/run-changes.md)). Keep the other ports on
 a management network.
 
 Device-facing listeners are not UIs, but for reference: syslog

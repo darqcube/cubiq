@@ -354,7 +354,8 @@ make check DEV=mt-01            # assurance — TextFSM everywhere, pyATS where 
 make snapshot DEV=router1       # comparable state, for pre/post comparison
 make config-get DEV=router1     # running config
 make config-parsed DEV=router1  # running config, parsed with TTP
-make config-put DEV=router1 FILE=change.txt   # push, and report what changed
+make change-stage DEV=router1 FILE=change.txt # stage a change (nothing sent): id, fingerprint
+make change-commit ID=<id> FP=<fingerprint>   # push it once, and report what changed
 ```
 
 **Scheduled assurance.** Set `ASSURANCE_INTERVAL_MINUTES` in `.env` (off by

@@ -128,11 +128,12 @@ A new platform needs a normaliser function, or its rules cannot run. See
 
 ```bash
 make snapshot DEV=router1 > /tmp/before.json
-make config-put DEV=router1 FILE=change.txt  # reports what changed
+make change-stage DEV=router1 FILE=change.txt   # nothing sent: prints the id and fingerprint
+make change-commit ID=<id> FP=<fingerprint>     # pushes once, reports what changed
 make snapshot DEV=router1 > /tmp/after.json
 ```
 
-`config-put` takes its own snapshot on both sides and reports the difference,
+The commit takes its own snapshot on both sides and reports the difference,
 so a push says what it actually did rather than only that it completed:
 
 ```json

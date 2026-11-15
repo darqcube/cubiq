@@ -1,12 +1,13 @@
-"""The changes, and every decision on them, in one SQLite file.
+"""The changes, and every action on them, in one SQLite file: the execution log.
 
 SQLite because the automation API runs ONE worker (see scheduler.py) and a
 change is a few rows: no server to run, and the file lives on a named volume so
 a container rebuild keeps the history. Every state transition happens under one
 lock, so two commits of the same change cannot both start.
 
-Every action is an event, allowed or refused, with the person and the agent:
-that list is the audit an approver reads (History).
+Every action is an event, done or refused, with the caller and the agent.
+The store never reaches a device: the API reads the configuration and pushes,
+and hands the store what it needs (the configuration's digest).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from pathlib import Path
 
 from . import lines as line_rules
 from . import policy
-from .policy import APPROVED, COMMITTED, COMMITTING, EXPIRED, FAILED, REJECTED, WAITING, WITHDRAWN, Refused
+from .policy import COMMITTED, COMMITTING, FAILED, LEGACY_OPEN, STAGED, WITHDRAWN, Conflict, Refused
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS changes (id TEXT PRIMARY KEY, state TEXT NOT NULL, staged_at REAL NOT NULL, data TEXT NOT NULL);
@@ -28,6 +29,8 @@ CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, t REAL 
   action TEXT NOT NULL, outcome TEXT NOT NULL, user TEXT, agent TEXT, detail TEXT);
 CREATE INDEX IF NOT EXISTS events_t ON events(t);
 """
+
+STACK = {"user": "stack"}
 
 
 class NotFound(LookupError):
@@ -52,6 +55,13 @@ class Store:
             # it. Never retried by itself; a person looks at the device.
             for change in self._select("state = ?", (COMMITTING,)):
                 self._finish(change, FAILED, error="interrupted by a restart: check the device before retrying")
+            # A 1.x change still waiting or approved: its approval followed the 1.x rules, which are gone.
+            for state in LEGACY_OPEN:
+                for change in self._select("state = ?", (state,)):
+                    change.update(state=WITHDRAWN, withdrawn_at=self.clock(),
+                                  error=f"closed by the move to 2.0.0 (was {state}): stage it again")
+                    self._save(change)
+                    self._event(change["id"], "withdraw", "ok", STACK, f"was {state} under 1.x")
 
     # --- reading ------------------------------------------------------------
 
@@ -62,25 +72,20 @@ class Store:
     def list(self, state: str | None = None, limit: int = 100) -> list[dict]:
         limit = max(1, min(int(limit), 500))
         with self._lock:
-            self._expire_all()
             if state:
                 return self._select("state = ? ORDER BY staged_at DESC LIMIT ?", (state, limit))
             return self._select("1 ORDER BY staged_at DESC LIMIT ?", (limit,))
 
     def counts(self) -> dict[str, int]:
-        """How many changes are in each state (expired ones moved first): what /metrics exports, so a person learns that
-        a change waits for an approval (an alert, a badge) without anyone reading the changes themselves."""
+        """How many changes are in each state: what /metrics exports."""
         with self._lock:
-            self._expire_all()
             found = dict(self._db.execute("SELECT state, COUNT(*) FROM changes GROUP BY state").fetchall())
         return {state: int(found.get(state, 0)) for state in policy.STATES}
 
     def recent_states(self, within: float = 86400.0) -> dict[str, str]:
-        """Each change staged within `within` seconds, by id, with its state (expired ones moved first): what /metrics
-        exports per change, so a person can follow their own change (a run's approval card) without reading it. Only
+        """Each change staged within `within` seconds, by id, with its state: what /metrics exports per change. Only
         the id and the state: never the device, the lines or a person."""
         with self._lock:
-            self._expire_all()
             rows = self._db.execute("SELECT id, state FROM changes WHERE staged_at >= ?",
                                     (self.clock() - within,)).fetchall()
         return {change_id: state for change_id, state in rows}
@@ -96,95 +101,106 @@ class Store:
 
     # --- acting -------------------------------------------------------------
 
-    def stage(self, actor: dict, device: str, lines: list[str], rollback: list[str], source: str = "") -> dict:
-        now = self.clock()
-        with self._lock:
-            try:
-                policy.check_stage(actor, device, lines, rollback, self.settings)
-                protected = line_rules.refusals(lines) + [f"rollback {r}" for r in line_rules.refusals(rollback)]
-                if protected:
-                    raise Refused("protected lines: " + "; ".join(protected))
-            except Refused as exc:
+    def check_lines(self, actor: dict, device: str, lines: list[str], rollback: list[str]) -> None:
+        """Everything about a change that needs no device: shape and protected lines. Refusals are logged."""
+        try:
+            policy.check_stage(device, lines, rollback, self.settings)
+            protected = line_rules.refusals(lines) + [f"rollback {r}" for r in line_rules.refusals(rollback)]
+            if protected:
+                raise Refused("protected lines: " + "; ".join(protected))
+        except Refused as exc:
+            with self._lock:
                 self._event(None, "stage", "refused", actor, f"{device}: {exc}")
-                raise
+            raise
+
+    def stage(self, actor: dict, device: str, lines: list[str], rollback: list[str], config: str,
+              source: str = "") -> dict:
+        """Record a change against the device's configuration as read just now (`config`). Nothing is sent."""
+        self.check_lines(actor, device, lines, rollback)
+        now = self.clock()
+        digest = policy.config_digest(config)
+        user, agent = _who(actor)
+        with self._lock:
             change = {
                 "id": self._new_id(), "device": device, "lines": lines, "rollback": rollback,
-                "fingerprint": policy.fingerprint(device, lines, rollback), "state": WAITING,
-                "source": source[:64], "requester": actor.get("user"), "requester_sub": actor["sub"],
-                "requester_agent": actor.get("agent"), "staged_at": now,
-                "approve_by": now + self.settings.approve_within,
+                "config_digest": digest, "fingerprint": policy.fingerprint(device, lines, rollback, digest),
+                "already_present": policy.already_present(config, lines), "state": STAGED,
+                "source": source[:64], "requester": user, "requester_sub": actor.get("sub"),
+                "requester_agent": agent, "staged_at": now,
             }
             self._db.execute("INSERT INTO changes (id, state, staged_at, data) VALUES (?, ?, ?, ?)",
-                             (change["id"], WAITING, now, json.dumps(change)))
+                             (change["id"], STAGED, now, json.dumps(change)))
             self._event(change["id"], "stage", "ok", actor, f"{device}: {len(lines)} lines")
             return change
 
-    def decide(self, change_id: str, actor: dict, approve: bool, reason: str = "") -> dict:
-        action = "approve" if approve else "reject"
-        now = self.clock()
-        with self._lock:
-            change = self._get(change_id)
-            self._check(policy.check_decide, actor, change, now, action=action)
-            user, agent = _who(actor)
-            change.update(approver=user, approver_sub=actor["sub"], approver_agent=agent, decided_at=now)
-            if approve:
-                change.update(state=APPROVED, commit_by=now + self.settings.commit_within)
-            else:
-                change.update(state=REJECTED, reject_reason=reason[:300])
-            self._save(change)
-            self._event(change_id, action, "ok", actor, reason[:300])
-            return change
-
     def withdraw(self, change_id: str, actor: dict) -> dict:
-        now = self.clock()
         with self._lock:
             change = self._get(change_id)
-            self._check(lambda a, c, n, s: policy.check_withdraw(a, c, n), actor, change, now, action="withdraw")
-            change.update(state=WITHDRAWN, withdrawn_at=now)
+            self._check(lambda: policy.check_withdraw(change), change, actor, "withdraw")
+            change.update(state=WITHDRAWN, withdrawn_at=self.clock())
             self._save(change)
             self._event(change_id, "withdraw", "ok", actor, "")
             return change
 
-    def begin_commit(self, change_id: str, actor: dict, rollback: bool = False) -> dict:
-        """Check and claim the change for one push. The caller pushes, then finish()."""
+    def begin_commit(self, change_id: str, actor: dict, key: str, fingerprint: str = "",
+                     rollback: bool = False) -> tuple[dict, bool]:
+        """Claim the change for one push. Returns (change, replayed): replayed means this key already did it, so the
+        caller answers with the change as it is and pushes nothing. Otherwise the caller pushes, then finish()."""
         action = "rollback" if rollback else "commit"
-        now = self.clock()
         with self._lock:
             change = self._get(change_id)
-            check = policy.check_rollback if rollback else policy.check_commit
-            self._check(check, actor, change, now, action=action)
+
+            def checks():
+                policy.check_key(key)
+                if policy.replay(change, key, rollback):
+                    return
+                policy.check_rollback(change) if rollback else policy.check_commit(change, fingerprint)
+
+            self._check(checks, change, actor, action)
+            if change.get("rollback_key" if rollback else "commit_key") == key:
+                self._event(change_id, action, "replayed", actor, "same idempotency key: nothing pushed")
+                return change, True
             user, agent = _who(actor)
             if rollback:
-                change.update(rollback_used_at=now, rollback_by=user, rollback_agent=agent)
+                change.update(rollback_key=key, rollback_used_at=self.clock(), rollback_by=user, rollback_agent=agent)
             else:
-                change.update(state=COMMITTING, committer=user, committer_agent=agent, commit_started_at=now)
+                change.update(state=COMMITTING, commit_key=key, committer=user, committer_agent=agent,
+                              commit_started_at=self.clock())
             self._save(change)
             self._event(change_id, action, "started", actor, "")
-            return change
+            return change, False
 
-    def finish(self, change_id: str, result: dict | None = None, error: str = "", rollback: bool = False) -> dict:
+    def finish(self, change_id: str, result: dict | None = None, error: str = "", rollback: bool = False,
+               refused: str = "") -> dict:
+        """Record how the push ended. `refused`: nothing was sent (the device's configuration had changed since the
+        stage); the change is closed as failed with the reason, to be staged again against the new configuration."""
         with self._lock:
             change = self._get(change_id)
             if rollback:
-                change.update(rollback_result=result, rollback_error=error[:500])
+                change.update(rollback_result=result, rollback_error=(refused or error)[:500])
                 self._save(change)
-                self._event(change_id, "rollback", "ok" if not error else "failed",
-                            {"user": change.get("rollback_by"), "agent": change.get("rollback_agent")}, error[:500])
+                self._event(change_id, "rollback", "ok" if not (error or refused) else "failed",
+                            {"user": change.get("rollback_by"), "agent": change.get("rollback_agent")},
+                            (refused or error)[:500])
                 return change
-            return self._finish(change, FAILED if error else COMMITTED, result=result, error=error)
+            return self._finish(change, FAILED if (error or refused) else COMMITTED, result=result,
+                                error=refused or error, pushed=not refused)
 
     # --- internals ----------------------------------------------------------
 
-    def _check(self, check, actor: dict, change: dict, now: float, action: str) -> None:
+    def _check(self, check, change: dict, actor: dict, action: str) -> None:
         try:
-            check(actor, change, now, self.settings)
+            check()
         except Refused as exc:
             self._event(change["id"], action, "refused", actor, str(exc))
             raise
 
-    def _finish(self, change: dict, state: str, result: dict | None = None, error: str = "") -> dict:
+    def _finish(self, change: dict, state: str, result: dict | None = None, error: str = "",
+                pushed: bool = True) -> dict:
         now = self.clock()
-        change.update(state=state, committed_at=now, result=result, error=error[:500])
+        change.update(state=state, result=result, error=error[:500])
+        if pushed:
+            change["committed_at"] = now
         self._save(change)
         self._event(change["id"], "commit", "ok" if state == COMMITTED else "failed",
                     {"user": change.get("committer"), "agent": change.get("committer_agent")}, error[:500])
@@ -201,25 +217,11 @@ class Store:
         row = self._db.execute("SELECT data FROM changes WHERE id = ?", (change_id,)).fetchone()
         if not row:
             raise NotFound(f"no change {change_id!r}")
-        return self._expire(json.loads(row[0]))
+        return json.loads(row[0])
 
     def _select(self, where: str, args: tuple) -> list[dict]:
         rows = self._db.execute(f"SELECT data FROM changes WHERE {where}", args).fetchall()
-        return [self._expire(json.loads(row[0])) for row in rows]
-
-    def _expire(self, change: dict) -> dict:
-        lapsed = policy.expire(change, self.clock())
-        if lapsed:
-            was = change["state"]
-            change.update(state=lapsed, expired_at=self.clock())
-            self._save(change)
-            self._event(change["id"], "expire", "ok", {"user": "stack"},
-                        "no decision in time" if was == WAITING else "approved but not committed in time")
-        return change
-
-    def _expire_all(self) -> None:
-        for (data,) in self._db.execute("SELECT data FROM changes WHERE state IN (?, ?)", (WAITING, APPROVED)).fetchall():
-            self._expire(json.loads(data))
+        return [json.loads(row[0]) for row in rows]
 
     def _save(self, change: dict) -> None:
         self._db.execute("UPDATE changes SET state = ?, data = ? WHERE id = ?",
@@ -231,5 +233,4 @@ class Store:
                          (self.clock(), change_id, action, outcome, user, agent, detail))
 
 
-# Exported for the API: states a person reads as "done".
-CLOSED_STATES = (COMMITTED, REJECTED, WITHDRAWN, EXPIRED, FAILED)
+__all__ = ["Store", "NotFound", "Refused", "Conflict"]

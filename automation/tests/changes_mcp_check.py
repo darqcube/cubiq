@@ -1,17 +1,17 @@
 """Runs INSIDE darqcube/mcp:local, driven by test_changes_mcp.py.
 
-The approved-changes gates of mcp-netmiko, on the real ASGI app: the MCP
-tools behind the stack's auth middleware, and the /changes routes for people.
-The automation API is replaced by a recorder (the rules themselves are tested
-offline in test_changes.py), so what is pinned here is who gets through which
-door and what identity reaches the rules:
+The change tools of mcp-netmiko, on the real ASGI app behind the stack's auth
+middleware. The automation API is replaced by a recorder (the rules themselves
+are tested offline in test_changes.py and in the API check), so what is pinned
+here is who gets through and what reaches the API:
 
-- an agent's token (MCP audience) can stage and commit, never approve
-- the approvals audience is the only key to /changes, and it opens no tool
-- the verified person, their roles, the agent (azp) and the sign-in time are
-  what reach the rules, never values a caller sent
+- the tools are stage, commit, rollback, withdraw and get: none approves, and
+  the 1.x approvals path (/changes for people) is gone
+- an execute client (agenticops.yml) stages and commits; a read client and a
+  person's token, whatever roles it carries, are refused by every change tool
+- the verified caller and agent reach the API, never values a caller sent
+- commit carries the fingerprint and the idempotency key it was given
 - a refusal reaches the model as a refusal with its reason
-- a person without the approve right sees only their own changes, no audit
 
 Prints one JSON object: {check name: [passed, detail]}.
 """
@@ -26,12 +26,13 @@ import traceback
 
 os.environ.update({
     "MCP_ALLOW_WRITE": "true",
-    "WRITE_MODE": "approved",
     "MCP_AUTH_TOKEN": "test-token",
+    "MCP_EXECUTE_TOKEN": "exec-token",
     "MCP_AUTH_MODE": "both",
     "MCP_OIDC_ISSUER": "http://idp.example/realms/demo",
     "MCP_OIDC_JWKS_URL": "http://idp.example/jwks",
-    "MCP_OIDC_AUDIENCES": "ai-platform",
+    "MCP_OIDC_AUDIENCES": "cubiq",
+    "MCP_OIDC_CLIENT_SCOPES": "platform-control=execute,platform-preprod=read",
     "AUTOMATION_URL": "http://127.0.0.1:9",
 })
 sys.path.insert(0, "/app")
@@ -55,13 +56,11 @@ INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
 results: dict[str, list] = {}
 
 
-def token(aud="ai-platform", roles=("darqcube-propose", "darqcube-commit"), sub="u-1", user="alice",
-          azp="agent-change-executor", auth_time=None) -> str:
+def token(azp="platform-control", sub="u-1", user="alice",
+          roles=("darqcube-propose", "darqcube-approve", "darqcube-commit")) -> str:
     now = int(time.time())
-    claims = {"iss": ISSUER, "aud": aud, "sub": sub, "preferred_username": user, "azp": azp,
+    claims = {"iss": ISSUER, "aud": "cubiq", "sub": sub, "preferred_username": user, "azp": azp,
               "iat": now, "exp": now + 300, "realm_access": {"roles": list(roles)}}
-    if auth_time is not None:
-        claims["auth_time"] = auth_time
     return "Bearer " + jwt.encode(claims, KEY, algorithm="RS256", headers={"kid": "test-key"})
 
 
@@ -72,34 +71,26 @@ class Recorder:
         self.calls: list[tuple[str, str, dict | None]] = []
         self.refuse: str | None = None
 
-    def _change(self, actor, state="waiting", sub=None):
+    def _change(self, actor, state="staged"):
         return {"id": "7f3a-c21e", "device": "router1", "state": state, "lines": ["x"], "rollback": [],
-                "fingerprint": "f" * 64, "requester": actor.get("user") if actor else "bob",
-                "requester_sub": sub or (actor.get("sub") if actor else "u-2"), "staged_at": time.time(),
-                "approve_by": time.time() + 7200}
+                "fingerprint": "f" * 64, "already_present": [], "requester": actor.get("user") if actor else "bob",
+                "requester_sub": actor.get("sub") if actor else "u-2", "staged_at": time.time()}
 
     def post(self, path, json=None):
         self.calls.append(("POST", path, json))
         if self.refuse:
-            raise RuntimeError(f"POST {path} -> 403: " + __import__("json").dumps({"detail": self.refuse}))
-        return self._change((json or {}).get("actor"), "approved" if path.endswith("/approve") else "waiting")
+            raise RuntimeError(f"POST {path} -> 409: " + __import__("json").dumps({"detail": self.refuse}))
+        return self._change((json or {}).get("actor"), "committed" if path.endswith("/commit") else "staged")
 
     def get(self, path, params=None):
         self.calls.append(("GET", path, None))
-        if path.startswith("/changes/events"):
-            return {"events": [{"action": "stage", "outcome": "ok"}]}
-        if path.startswith("/changes?"):
-            return {"changes": [self._change(None, sub="u-1"), {**self._change(None, sub="u-2"), "id": "aaaa-bbbb"}]}
-        return self._change(None, sub="u-2")
+        return self._change(None)
 
 
 API = Recorder()
 netmiko.api = API
 
-app = netmiko.mcp.streamable_http_app()
-app.router.routes.extend(netmiko.PUBLIC_ROUTES)
-prefixes = tuple(r.path.split("{", 1)[0] for r in netmiko.PUBLIC_ROUTES)
-APP = common._Auth(app, common.Verifier(), "netmiko", prefixes)
+APP = common._Auth(netmiko.mcp.streamable_http_app(), common.Verifier(), "netmiko")
 
 
 def messages(response) -> list[dict]:
@@ -148,127 +139,93 @@ logging.getLogger("mcp.audit").addHandler(capture)
 logging.getLogger("mcp.audit").setLevel(logging.INFO)
 
 with TestClient(APP) as c:
-    agent = session(c, token())
+    control = session(c, token())
 
     def tools_list():
-        names = sorted(t["name"] for t in rpc(c, agent, "tools/list", {})["result"]["tools"])
+        names = sorted(t["name"] for t in rpc(c, control, "tools/list", {})["result"]["tools"])
         want = ["commit_device_change", "get_device_change", "get_device_config", "get_device_state",
                 "rollback_device_change", "stage_device_change", "withdraw_device_change"]
         return names == want and not [n for n in names if "approve" in n or "push" in n], names
-    check("tools_are_stage_commit_and_never_approve", tools_list)
+    check("tools_are_stage_commit_rollback_withdraw_and_never_approve", tools_list)
+
+    def approvals_path_gone():
+        r = c.get("/changes", headers={"Authorization": token()})
+        p = c.post("/changes/7f3a-c21e/approve", headers={"Authorization": token()})
+        return r.status_code == p.status_code == 404 and not getattr(netmiko, "PUBLIC_ROUTES", []), \
+            (r.status_code, p.status_code)
+    check("the_1x_approvals_path_is_gone", approvals_path_gone)
 
     def stage_identity():
         API.calls.clear()
-        result = call(c, agent, "stage_device_change", {"device": "router1", "lines": ["interface Ethernet0/1"],
-                                                        "source": "chat"})
+        result = call(c, control, "stage_device_change", {"device": "router1", "lines": ["interface Ethernet0/1"],
+                                                          "source": "run 14"})
         method, path, body = API.calls[-1]
         actor = body["actor"]
-        ok = (path == "/changes" and actor["sub"] == "u-1" and actor["user"] == "alice"
-              and actor["agent"] == "agent-change-executor" and actor["via"] == "oidc"
-              and "darqcube-propose" in actor["roles"] and not result.get("isError"))
+        ok = (path == "/changes" and actor == {"user": "alice", "sub": "u-1", "via": "oidc", "agent": "platform-control"}
+              and not result.get("isError"))
         return ok, actor
-    check("stage_passes_the_verified_person_and_agent", stage_identity)
+    check("stage_passes_the_verified_caller_and_agent_only", stage_identity)
+
+    def commit_carries_key_and_fingerprint():
+        API.calls.clear()
+        result = call(c, control, "commit_device_change",
+                      {"change_id": "7f3a-c21e", "fingerprint": "f" * 64, "idempotency_key": "run14-commit"})
+        method, path, body = API.calls[-1]
+        ok = (path == "/changes/7f3a-c21e/commit" and body["fingerprint"] == "f" * 64
+              and body["idempotency_key"] == "run14-commit" and not result.get("isError"))
+        return ok, body
+    check("commit_carries_the_fingerprint_and_the_idempotency_key", commit_carries_key_and_fingerprint)
+
+    def refused_for(auth):
+        s = session(c, auth)
+        before = len(API.calls)
+        out = [call(c, s, name, args) for name, args in (
+            ("stage_device_change", {"device": "router1", "lines": ["x"]}),
+            ("commit_device_change", {"change_id": "7f3a-c21e", "fingerprint": "f" * 64, "idempotency_key": "k-000001"}),
+            ("rollback_device_change", {"change_id": "7f3a-c21e", "idempotency_key": "k-000001"}),
+            ("withdraw_device_change", {"change_id": "7f3a-c21e"}))]
+        return all(r.get("isError") and "needs execute" in json.dumps(r) for r in out) and len(API.calls) == before, \
+            json.dumps(out)[:300]
+
+    check("a_read_client_is_refused_by_every_change_tool", lambda: refused_for(token(azp="platform-preprod")))
+    check("a_persons_roles_count_for_nothing", lambda: refused_for(token(azp="portal")))
+    check("the_read_token_is_refused_by_every_change_tool", lambda: refused_for("Bearer test-token"))
+
+    def read_client_reads():
+        s = session(c, token(azp="platform-preprod"))
+        result = call(c, s, "get_device_change", {"change_id": "7f3a-c21e"})
+        return not result.get("isError"), json.dumps(result)[:200]
+    check("a_read_client_reads_a_change", read_client_reads)
+
+    def execute_token_stages():
+        s = session(c, "Bearer exec-token")
+        API.calls.clear()
+        result = call(c, s, "stage_device_change", {"device": "router1", "lines": ["x"]})
+        return not result.get("isError") and API.calls[-1][2]["actor"]["user"] == "execute-token", \
+            json.dumps(result)[:200]
+    check("the_execute_token_stages", execute_token_stages)
 
     def refusal_reaches_the_model():
-        API.refuse = "change 7f3a-c21e is waiting, not approved"
+        API.refuse = "the fingerprint is not this change's: commit exactly what was staged"
         try:
-            result = call(c, agent, "commit_device_change", {"change_id": "7f3a-c21e"})
+            result = call(c, control, "commit_device_change",
+                          {"change_id": "7f3a-c21e", "fingerprint": "0" * 64, "idempotency_key": "k-000002"})
         finally:
             API.refuse = None
         text = json.dumps(result)
-        return result.get("isError") and "refused: change 7f3a-c21e is waiting, not approved" in text, text[:300]
+        return result.get("isError") and "refused: the fingerprint is not this change's" in text, text[:300]
     check("a_refusal_reaches_the_model_with_its_reason", refusal_reaches_the_model)
 
     def bad_id():
         before = len(API.calls)
-        result = call(c, agent, "commit_device_change", {"change_id": "../../device/router1/config"})
+        result = call(c, control, "commit_device_change",
+                      {"change_id": "../../device/router1/config", "fingerprint": "f", "idempotency_key": "k-000003"})
         return result.get("isError") and len(API.calls) == before, json.dumps(result)[:200]
     check("a_malformed_change_id_never_reaches_the_api", bad_id)
 
-    def mcp_refuses_approvals_token():
-        s = session(c, token(aud="darqcube-approvals", roles=("darqcube-approve",), azp="approvals-app"))
-        return s.get("status") == 401, s.get("status")
-    check("mcp_refuses_an_approvals_token", mcp_refuses_approvals_token)
-
-    fresh = int(time.time()) - 5
-    approver = token(aud="darqcube-approvals", roles=("darqcube-approve", "darqcube-commit"), sub="u-9",
-                     user="manager", azp="approvals-app", auth_time=fresh)
-
-    def route_refuses_agent_token():
-        r = c.get("/changes", headers={"Authorization": token()})
-        return r.status_code == 401, r.status_code
-    check("approvals_route_refuses_an_agents_token", route_refuses_agent_token)
-
-    def route_refuses_shared_token():
-        r = c.get("/changes", headers={"Authorization": "Bearer test-token"})
-        return r.status_code == 401, r.status_code
-    check("approvals_route_refuses_the_shared_token", route_refuses_shared_token)
-
-    def approve_passes_sign_in_time():
-        API.calls.clear()
-        r = c.post("/changes/7f3a-c21e/approve", headers={"Authorization": approver}, json={"reason": "ok"})
-        method, path, body = API.calls[-1]
-        actor = body["actor"]
-        ok = (r.status_code == 200 and path == "/changes/7f3a-c21e/approve" and actor["sub"] == "u-9"
-              and actor["auth_time"] == fresh and actor["agent"] == "approvals-app" and body["reason"] == "ok")
-        return ok, (r.status_code, actor)
-    check("approve_passes_the_person_and_their_sign_in_time", approve_passes_sign_in_time)
-
-    def approve_refusal_is_403():
-        API.refuse = "an approval needs a fresh sign-in (within 300 s)"
-        try:
-            r = c.post("/changes/7f3a-c21e/approve", headers={"Authorization": approver})
-        finally:
-            API.refuse = None
-        return r.status_code == 403 and "fresh sign-in" in r.text, (r.status_code, r.text[:200])
-    check("an_approval_refusal_is_a_403_with_its_reason", approve_refusal_is_403)
-
-    def approver_sees_all():
-        r = c.get("/changes", headers={"Authorization": approver})
-        return r.status_code == 200 and len(r.json()["changes"]) == 2 and r.json()["can_approve"], r.text[:200]
-    check("an_approver_sees_every_change", approver_sees_all)
-
-    asker = token(aud="darqcube-approvals", roles=("darqcube-propose",), sub="u-1", user="alice", azp="approvals-app")
-
-    def asker_sees_own():
-        r = c.get("/changes", headers={"Authorization": asker})
-        ids = [x["id"] for x in r.json()["changes"]]
-        return r.status_code == 200 and ids == ["7f3a-c21e"] and not r.json()["can_approve"], ids
-    check("a_person_without_the_approve_right_sees_only_their_changes", asker_sees_own)
-
-    def asker_no_audit():
-        r = c.get("/changes/events", headers={"Authorization": asker})
-        return r.status_code == 403, r.status_code
-    check("the_audit_is_for_approvers", asker_no_audit)
-
-    def others_change_hidden():
-        r = c.get("/changes/7f3a-c21e", headers={"Authorization": asker})  # the recorder's change is u-2's
-        return r.status_code == 404, r.status_code
-    check("someone_elses_change_is_not_found", others_change_hidden)
-
-    def bad_route_id():
-        r = c.post("/changes/not-an-id/approve", headers={"Authorization": approver})
-        return r.status_code == 400, r.status_code
-    check("a_malformed_change_id_is_400", bad_route_id)
-
     def audit_names_agent():
         line = next((m for m in capture.records if "tool=stage_device_change" in m), "")
-        return "agent=agent-change-executor" in line and "user=alice" in line, line
-    check("the_audit_line_names_the_agent", audit_names_agent)
-
-    def iat_is_the_sign_in_when_configured():
-        # A provider without auth_time on the password grant: the approvals client issues no refresh tokens, so iat is
-        # when the password was typed. auth_time stays the default, and without it a token proves no sign-in time.
-        bare = token(aud="darqcube-approvals", roles=("darqcube-approve",), sub="u-9", user="manager", azp="approvals-app")
-        verifier = netmiko._approvals_verifier()
-        default = verifier.verify(bare)["auth_time"]
-        common.SIGNIN_CLAIM = "iat"
-        try:
-            configured = verifier.verify(bare)["auth_time"]
-        finally:
-            common.SIGNIN_CLAIM = "auth_time"
-        iat = jwt.decode(bare.split()[1], options={"verify_signature": False})["iat"]
-        return default is None and configured == iat, (default, configured, iat)
-    check("iat_counts_as_the_sign_in_only_when_configured", iat_is_the_sign_in_when_configured)
+        return "agent=platform-control" in line and "user=alice" in line and "scope=execute" in line, line
+    check("the_audit_line_names_the_agent_and_scope", audit_names_agent)
 
 print(json.dumps(results))

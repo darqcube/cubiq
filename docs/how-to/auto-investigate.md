@@ -9,7 +9,7 @@ receivers, and the platform reads which from the body's `"receiver"`:
 | `notify` | tell people | every other alert |
 
 An investigation never changes a device: a change it proposes is still staged, approved by a person and committed
-once ([approve-changes.md](approve-changes.md)).
+once ([run-changes.md](run-changes.md)).
 
 ## The policy lives in Infrahub
 

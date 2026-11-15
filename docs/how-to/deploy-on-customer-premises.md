@@ -58,7 +58,7 @@ local-user darqcube privilege level 1
 
 You still get everything that matters: all metrics, all logs, all flow, parsed
 operational state, and the assurance checks. What stops working is
-`make config-put` and the MCP write tool — which should not be running in a PoC
+`make change-commit` and the MCP change tools — which should not be running in a PoC
 anyway.
 
 This is also far easier to take to a change board than "a thing with full write
@@ -134,7 +134,7 @@ POST /device/{name}/config     pushes configuration to a device
 **It has no authentication**, so it is published on **loopback only** by default
 (`AUTOMATION_BIND_IP=127.0.0.1`), and with `WRITE_MODE=approved` (the default)
 the POST refuses: device changes are staged, approved by a person and committed
-([approve-changes.md](approve-changes.md)). The GET still returns running
+([run-changes.md](run-changes.md)). The GET still returns running
 configurations — SNMP communities, local password hashes and keys — to anything
 on this host.
 

@@ -1,10 +1,10 @@
-"""mcp-netmiko in approved mode — the real app, inside the built image.
+"""mcp-netmiko's change tools — the real app, inside the built image.
 
-Who gets through which door, and what identity reaches the change rules:
-an agent's token stages and commits but never approves; only the approvals
-audience opens /changes, and it opens no MCP tool; refusals reach the model
-with their reason; a person without the approve right sees only their own
-changes. The rules themselves: test_changes.py (offline).
+Who gets through and what reaches the automation API: an execute client (or
+the execute token) stages and commits; a read client, the read token and a
+person's token — whatever roles it carries — are refused by every change tool;
+no tool approves and the 1.x approvals path is gone; commit carries its
+fingerprint and idempotency key. The rules themselves: test_changes.py.
 
 Needs darqcube/mcp:local built from this tree (docker compose build mcp-infrahub).
 No running stack; changes_mcp_check.py does the work inside the image.
@@ -24,14 +24,12 @@ IMAGE = "darqcube/mcp:local"
 pytestmark = pytest.mark.skipif(shutil.which("docker") is None, reason="docker not available")
 
 EXPECTED = [
-    "tools_are_stage_commit_and_never_approve", "stage_passes_the_verified_person_and_agent",
+    "tools_are_stage_commit_rollback_withdraw_and_never_approve", "the_1x_approvals_path_is_gone",
+    "stage_passes_the_verified_caller_and_agent_only", "commit_carries_the_fingerprint_and_the_idempotency_key",
+    "a_read_client_is_refused_by_every_change_tool", "a_persons_roles_count_for_nothing",
+    "the_read_token_is_refused_by_every_change_tool", "a_read_client_reads_a_change", "the_execute_token_stages",
     "a_refusal_reaches_the_model_with_its_reason", "a_malformed_change_id_never_reaches_the_api",
-    "mcp_refuses_an_approvals_token", "approvals_route_refuses_an_agents_token",
-    "approvals_route_refuses_the_shared_token", "approve_passes_the_person_and_their_sign_in_time",
-    "an_approval_refusal_is_a_403_with_its_reason", "an_approver_sees_every_change",
-    "a_person_without_the_approve_right_sees_only_their_changes", "the_audit_is_for_approvers",
-    "someone_elses_change_is_not_found", "a_malformed_change_id_is_400", "the_audit_line_names_the_agent",
-    "iat_counts_as_the_sign_in_only_when_configured",
+    "the_audit_line_names_the_agent_and_scope",
 ]
 
 
@@ -53,6 +51,6 @@ def test_every_check_ran(results):
 
 
 @pytest.mark.parametrize("name", EXPECTED)
-def test_approved_changes_gate(results, name):
+def test_change_tools_gate(results, name):
     ok, detail = results[name]
     assert ok, detail

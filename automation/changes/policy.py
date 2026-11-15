@@ -1,35 +1,44 @@
-"""The rules a device change must pass. Pure functions: no I/O, no clock reads.
+"""The rules every device change follows. Pure functions: no I/O, no clock reads.
 
-Who may act comes from RIGHTS, roles in the caller's token that the identity
-provider gives to groups — never from a person's name. Four rights:
+These are properties of executing a change, not policy about who may change
+what. Who may call is decided by the MCP layer (the execute scope: a named
+client of the identity provider, or the execute token); whether a person
+approved the change is the connected platform's business, never this stack's.
 
-  propose      stage a change; withdraw it before it is approved
-  approve      approve or reject a change (only through the approvals path,
-               from a fresh sign-in; see mcp/servers/netmiko.py)
-  commit       commit an approved change the caller asked for or approved
-  commit_any   also commit a colleague's approved change (a shift handover)
-
-The commit right and the change's own record work together: the right says
-who may push at all, the record says which change.
-
-A caller authenticated with the shared MCP token is a machine, not a person:
-it may not take part in a change. Maker-checker needs two people to be named.
+  stage      the exact lines (one command each, no control characters, at most
+             MAX_CONFIG_LINES), checked against protected lines, fingerprinted
+             together with the device's configuration as it was then
+  commit     only a staged change, only with its fingerprint, only once: a
+             retry with the same idempotency key gets the first result, never a
+             second push; a device whose configuration changed since staging is
+             refused before anything is sent
+  rollback   only a committed change that declared one, only once
+  withdraw   only a staged change
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 
-WAITING, APPROVED, COMMITTING, COMMITTED = "waiting", "approved", "committing", "committed"
-REJECTED, WITHDRAWN, EXPIRED, FAILED = "rejected", "withdrawn", "expired", "failed"
-STATES = (WAITING, APPROVED, COMMITTING, COMMITTED, REJECTED, WITHDRAWN, EXPIRED, FAILED)
-CLOSED = (REJECTED, WITHDRAWN, EXPIRED, FAILED)
+STAGED, COMMITTING, COMMITTED, WITHDRAWN, FAILED = "staged", "committing", "committed", "withdrawn", "failed"
+STATES = (STAGED, COMMITTING, COMMITTED, WITHDRAWN, FAILED)
+CLOSED = (COMMITTED, WITHDRAWN, FAILED)
+# 1.x states. A change left in one of them when the stack moves to 2.0.0 is closed at startup (store.py): its approval
+# belonged to the 1.x rules, so it is never committed under the 2.0.0 ones.
+LEGACY_OPEN = ("waiting", "approved")
+
+IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 
 
 class Refused(Exception):
     """The action breaks a rule. The message says which, for a person to read."""
+
+
+class Conflict(Refused):
+    """The change or the device is not in the state the caller expected (HTTP 409)."""
 
 
 def _int(name: str, default: int) -> int:
@@ -37,62 +46,40 @@ def _int(name: str, default: int) -> int:
     return int(raw) if raw else default
 
 
-def _bool(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name, "").strip().lower()
-    return default if not raw else raw in ("1", "true", "yes", "on")
-
-
 @dataclass(frozen=True)
 class Settings:
-    approve_within: int = 120 * 60      # seconds a change waits for a decision
-    commit_within: int = 15 * 60        # seconds from approval to commit
-    rollback_within: int = 60 * 60      # seconds after the push the rollback stays allowed
-    fresh_signin: int = 300             # an approval's sign-in may be at most this old
-    four_eyes: bool = False             # the approver must not be the person who asked
     max_lines: int = 200
-    roles: dict[str, str] = field(default_factory=lambda: {
-        "propose": "darqcube-propose", "approve": "darqcube-approve",
-        "commit": "darqcube-commit", "commit_any": "darqcube-commit-any",
-    })
 
     @classmethod
     def from_env(cls) -> "Settings":
-        return cls(
-            approve_within=_int("CHANGE_APPROVE_WITHIN_MINUTES", 120) * 60,
-            commit_within=_int("CHANGE_COMMIT_WITHIN_MINUTES", 15) * 60,
-            rollback_within=_int("CHANGE_ROLLBACK_WITHIN_MINUTES", 60) * 60,
-            fresh_signin=_int("CHANGE_FRESH_SIGNIN_SECONDS", 300),
-            four_eyes=_bool("CHANGE_FOUR_EYES"),
-            max_lines=_int("MAX_CONFIG_LINES", 200),
-            roles={
-                "propose": os.environ.get("CHANGE_PROPOSE_ROLE", "").strip() or "darqcube-propose",
-                "approve": os.environ.get("CHANGE_APPROVE_ROLE", "").strip() or "darqcube-approve",
-                "commit": os.environ.get("CHANGE_COMMIT_ROLE", "").strip() or "darqcube-commit",
-                "commit_any": os.environ.get("CHANGE_COMMIT_ANY_ROLE", "").strip() or "darqcube-commit-any",
-            },
-        )
+        return cls(max_lines=_int("MAX_CONFIG_LINES", 200))
 
 
-def fingerprint(device: str, lines: list[str], rollback: list[str]) -> str:
-    """SHA-256 of exactly what was approved: the device, the lines in order, the rollback."""
-    canonical = json.dumps({"device": device, "lines": lines, "rollback": rollback},
+# Lines no device-configuration comparison should count: blank lines and comments (IOS "!", VRP and RouterOS "#",
+# which carry timestamps such as "! Last configuration change at …"), and IOS's self-adjusting "ntp clock-period".
+_VOLATILE = re.compile(r"^\s*(?:$|!|#|ntp clock-period\b)")
+
+
+def config_digest(config: str) -> str:
+    """SHA-256 of a running configuration without its volatile lines: equal when nobody changed the device."""
+    kept = [line.rstrip() for line in config.splitlines() if not _VOLATILE.match(line)]
+    return hashlib.sha256("\n".join(kept).encode()).hexdigest()
+
+
+def fingerprint(device: str, lines: list[str], rollback: list[str], digest: str = "") -> str:
+    """SHA-256 of exactly what was staged: the device, the lines in order, the rollback, the device's configuration."""
+    canonical = json.dumps({"device": device, "lines": lines, "rollback": rollback, "config": digest},
                            sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _person(actor: dict) -> None:
-    if actor.get("via") != "oidc" or not actor.get("sub"):
-        raise Refused("a change needs a named person: the shared MCP token cannot take part")
+def already_present(config: str, lines: list[str]) -> list[str]:
+    """The staged lines the running configuration already holds, word for word: the dry run's plain answer."""
+    present = {line.strip() for line in config.splitlines()}
+    return [line for line in lines if line.strip() in present]
 
 
-def _has(actor: dict, settings: Settings, right: str) -> bool:
-    return settings.roles[right] in set(actor.get("roles") or ())
-
-
-def check_stage(actor: dict, device: str, lines: list[str], rollback: list[str], settings: Settings) -> None:
-    _person(actor)
-    if not _has(actor, settings, "propose"):
-        raise Refused(f"{actor.get('user')} lacks the propose right ({settings.roles['propose']})")
+def check_stage(device: str, lines: list[str], rollback: list[str], settings: Settings) -> None:
     if not lines:
         raise Refused("no configuration lines")
     if len(lines) > settings.max_lines or len(rollback) > settings.max_lines:
@@ -104,71 +91,36 @@ def check_stage(actor: dict, device: str, lines: list[str], rollback: list[str],
             raise Refused(f"line {line[:40]!r}…: one command per line, no control characters, at most 512 characters")
 
 
-def expire(change: dict, now: float) -> str | None:
-    """The state a change should move to because time passed, or None."""
-    if change["state"] == WAITING and now > change["approve_by"]:
-        return EXPIRED
-    if change["state"] == APPROVED and now > change["commit_by"]:
-        return EXPIRED
-    return None
+def check_key(key: str) -> None:
+    if not IDEMPOTENCY_KEY.fullmatch(key or ""):
+        raise Refused("an idempotency key is required: 8 to 128 letters, digits or ._:- (one per intended push)")
 
 
-def _open(change: dict, now: float, wanted: str) -> None:
-    lapsed = expire(change, now)
-    if lapsed:
-        raise Refused(f"change {change['id']} expired")
-    if change["state"] != wanted:
-        raise Refused(f"change {change['id']} is {change['state']}, not {wanted}")
+def replay(change: dict, key: str, rollback: bool = False) -> bool:
+    """True when this call repeats one already made with the same key: answer with the first result, push nothing."""
+    used = change.get("rollback_key" if rollback else "commit_key")
+    if used and used == key:
+        return True
+    if used:
+        what = "rolled back" if rollback else "committed"
+        raise Conflict(f"change {change['id']} was already {what} (with another idempotency key)")
+    return False
 
 
-def check_decide(actor: dict, change: dict, now: float, settings: Settings) -> None:
-    """Approve or reject. The caller is the approvals path's verified person."""
-    _person(actor)
-    _open(change, now, WAITING)
-    if not _has(actor, settings, "approve"):
-        raise Refused(f"{actor.get('user')} lacks the approve right ({settings.roles['approve']})")
-    auth_time = actor.get("auth_time")
-    if not isinstance(auth_time, (int, float)) or now - auth_time > settings.fresh_signin:
-        raise Refused(f"an approval needs a fresh sign-in (within {settings.fresh_signin} s)")
-    if settings.four_eyes and actor["sub"] == change["requester_sub"]:
-        raise Refused("four eyes: the person who asked cannot approve their own change")
+def check_commit(change: dict, fingerprint_given: str) -> None:
+    if change["state"] != STAGED:
+        raise Conflict(f"change {change['id']} is {change['state']}, not {STAGED}")
+    if fingerprint_given != change["fingerprint"]:
+        raise Conflict("the fingerprint is not this change's: commit exactly what was staged")
 
 
-def check_withdraw(actor: dict, change: dict, now: float) -> None:
-    _person(actor)
-    _open(change, now, WAITING)
-    if actor["sub"] != change["requester_sub"]:
-        raise Refused("only the person who asked can withdraw a change")
-
-
-def _may_commit(actor: dict, change: dict, settings: Settings) -> None:
-    if _has(actor, settings, "commit_any"):
-        return
-    if not _has(actor, settings, "commit"):
-        raise Refused(f"{actor.get('user')} lacks the commit right ({settings.roles['commit']})")
-    if actor["sub"] not in (change["requester_sub"], change.get("approver_sub")):
-        raise Refused("only the person who asked or the approver commits this change "
-                      f"(or the {settings.roles['commit_any']} right)")
-
-
-def check_commit(actor: dict, change: dict, now: float, settings: Settings) -> None:
-    _person(actor)
-    _open(change, now, APPROVED)
-    _may_commit(actor, change, settings)
-    if fingerprint(change["device"], change["lines"], change["rollback"]) != change["fingerprint"]:
-        raise Refused("the change no longer matches what was approved (fingerprint differs)")
-
-
-def check_rollback(actor: dict, change: dict, now: float, settings: Settings) -> None:
-    _person(actor)
+def check_rollback(change: dict) -> None:
     if change["state"] != COMMITTED:
-        raise Refused(f"change {change['id']} is {change['state']}: only a pushed change rolls back")
+        raise Conflict(f"change {change['id']} is {change['state']}: only a pushed change rolls back")
     if not change["rollback"]:
         raise Refused(f"change {change['id']} declared no rollback")
-    if change.get("rollback_used_at"):
-        raise Refused(f"the rollback of change {change['id']} was already used")
-    if now > change["committed_at"] + settings.rollback_within:
-        raise Refused(f"the rollback of change {change['id']} expired")
-    _may_commit(actor, change, settings)
-    if fingerprint(change["device"], change["lines"], change["rollback"]) != change["fingerprint"]:
-        raise Refused("the change no longer matches what was approved (fingerprint differs)")
+
+
+def check_withdraw(change: dict) -> None:
+    if change["state"] != STAGED:
+        raise Conflict(f"change {change['id']} is {change['state']}: only a staged change is withdrawn")

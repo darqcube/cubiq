@@ -208,7 +208,7 @@ It sets three things you would otherwise get right by reading
 ### Re-running is safe
 
 `install.py` reads `site.yml` every time and regenerates `.env`, but **keeps the
-eight secrets it already generated** — regenerating those would orphan the data
+nine secrets it already generated** — regenerating those would orphan the data
 already in Neo4j and Postgres. Change a value in `site.yml`, re-run, and only
 that value moves.
 

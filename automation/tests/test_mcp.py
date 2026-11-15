@@ -1,8 +1,8 @@
 """MCP server tests — offline, against the built image.
 
 These check the two properties that make the MCP layer safe to point an AI at:
-no tool takes a raw query, and the one tool that changes device configuration
-is absent unless explicitly enabled.
+no tool takes a raw query, and the tools that change device configuration are
+absent unless explicitly enabled, and need the execute scope when they are.
 
 Needs darqcube/mcp:local (docker compose build mcp-infrahub). No running stack.
 """
@@ -50,43 +50,37 @@ def test_server_starts_and_registers_tools(server):
     assert int(match.group(1)) > 0, f"{server} registered no tools"
 
 
-def test_write_tool_is_absent_by_default():
-    """push_device_config must not be REGISTERED when writes are off — not
-    merely refuse when called. A caller that cannot see it cannot invoke it."""
-    default = start("netmiko")
-    explicit_false = start("netmiko", {"MCP_ALLOW_WRITE": "false"})
+def test_change_tools_are_absent_by_default():
+    """The change tools must not be REGISTERED when writes are off — not merely
+    refuse when called. A caller that cannot see them cannot invoke them."""
     count = lambda s: int(re.search(r"with (\d+) tool", s).group(1))
-    assert count(default) == 2
-    assert count(explicit_false) == 2
+    assert count(start("netmiko")) == 2
+    assert count(start("netmiko", {"MCP_ALLOW_WRITE": "false"})) == 2
 
 
-def test_write_tool_appears_only_when_explicitly_enabled():
-    """WRITE_MODE=direct: the one-step push. approved (the default): the five
-    change tools — stage, get, commit, rollback, withdraw — and no push."""
-    direct = start("netmiko", {"MCP_ALLOW_WRITE": "true", "WRITE_MODE": "direct"})
-    assert int(re.search(r"with (\d+) tool", direct).group(1)) == 3
-    approved = start("netmiko", {"MCP_ALLOW_WRITE": "true"})
-    assert int(re.search(r"with (\d+) tool", approved).group(1)) == 7
+def test_change_tools_appear_only_when_explicitly_enabled():
+    """Stage, get, commit, rollback, withdraw — and no one-step push, in any mode."""
+    on = start("netmiko", {"MCP_ALLOW_WRITE": "true"})
+    assert int(re.search(r"with (\d+) tool", on).group(1)) == 7
+    source = (SERVERS / "netmiko.py").read_text()
+    assert "push_device_config" not in source
 
 
 def test_no_change_tool_can_approve():
-    """Approval is a person's act on the /changes routes, never a tool an agent can call."""
+    """Approval is the connected platform's, never a tool here."""
     source = (SERVERS / "netmiko.py").read_text()
     tools = re.findall(r"@mcp\.tool\(\)\s+def (\w+)", source)
     assert not [t for t in tools if "approve" in t or "reject" in t], tools
 
 
-def test_an_unknown_sign_in_claim_is_refused_at_start():
-    out = start("netmiko", {"CHANGE_FRESH_SIGNIN_CLAIM": "nbf"})
-    assert "CHANGE_FRESH_SIGNIN_CLAIM must be auth_time or iat" in out
+def test_one_token_for_both_scopes_is_refused_at_start():
+    out = start("netmiko", {"MCP_EXECUTE_TOKEN": "test"})
+    assert "MCP_EXECUTE_TOKEN must differ from MCP_AUTH_TOKEN" in out
 
 
-def test_approvals_audience_is_never_an_mcp_audience():
-    """If the MCP tools accepted the approvals audience, an agent's token could approve."""
-    line = start("netmiko", {"MCP_ALLOW_WRITE": "true", "MCP_AUTH_MODE": "both",
-                             "MCP_OIDC_ISSUER": "http://idp.example", "MCP_OIDC_JWKS_URL": "http://idp.example/k",
-                             "MCP_OIDC_AUDIENCES": "ai-platform,darqcube-approvals"})
-    assert "must not include the approvals audience" in line
+def test_execute_is_never_a_default_scope():
+    out = start("netmiko", {"MCP_OIDC_DEFAULT_SCOPE": "execute"})
+    assert "MCP_OIDC_DEFAULT_SCOPE must be read or none" in out
 
 
 # --- static analysis of the tool surface ----------------------------------
@@ -177,12 +171,12 @@ def test_pyats_takes_features_not_commands():
     assert not re.search(r"def \w+\([^)]*\b(command|parser)\s*:", source)
 
 
-def test_write_tool_checks_the_callers_role():
-    """Registration is the first gate on push_device_config; the caller's role
-    (when calls carry identity) is the second."""
+def test_every_change_tool_checks_the_execute_scope_first():
+    """Registration is the first gate; the execute scope is the second, checked before the automation API is called."""
     source = (SERVERS / "netmiko.py").read_text()
-    push = source[source.index("def push_device_config"):]
-    assert "require_role(ctx)" in push.split("api.post")[0], "role is not checked before the push"
+    for tool in ("stage_device_change", "commit_device_change", "rollback_device_change", "withdraw_device_change"):
+        body = source[source.index(f"def {tool}("):].split("\n    @mcp.tool()")[0]
+        assert body.index('require_scope(ctx, "execute")') < body.index("_call("), tool
 
 
 def test_keep_alive_outlives_a_proxy_pool():

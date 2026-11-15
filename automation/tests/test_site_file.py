@@ -185,50 +185,31 @@ def test_write_access_is_off_unless_asked_for(inst, site):
     assert inst.site_to_env(site)["MCP_ALLOW_WRITE"] == "true"
 
 
-def test_changes_are_approved_unless_the_owner_says_direct(inst, site):
+@pytest.mark.parametrize("key, value", [
+    ("changes", {"write_mode": "approved", "four_eyes": True}),
+    ("ai_platform.auth.approve_role", "change-approvers"),
+    ("ai_platform.auth.propose_role", "x"),
+    ("ai_platform.auth.write_role", "x"),
+    ("ai_platform.auth.approvals_audience", "x"),
+    ("ai_platform.auth.fresh_signin_claim", "iat"),
+])
+def test_the_1x_guard_settings_are_refused_as_the_platforms(inst, site, key, value):
+    """Approval, rights, windows, fresh sign-in, four eyes, management interfaces: the connected platform's policy
+    since 2.0.0. A 1.x site file stops with that said, so nobody believes the stack still enforces them."""
+    node = site
+    *parents, leaf = key.split(".")
+    for part in parents:
+        node = node.setdefault(part, {})
+    node[leaf] = value
+    problems = inst.validate_site(site)
+    assert any(p.startswith(f"{key} left the stack in 2.0.0") and "the platform" in p for p in problems), problems
+    assert not any("unknown" in p and leaf in p for p in problems)
+
+
+def test_no_change_setting_reaches_the_env(inst, site):
     env = inst.site_to_env(site)
-    assert env["WRITE_MODE"] == "approved"
-    assert (env["CHANGE_APPROVE_WITHIN_MINUTES"], env["CHANGE_COMMIT_WITHIN_MINUTES"]) == ("120", "15")
-    assert env["CHANGE_FOUR_EYES"] == "false"
-    site["changes"]["write_mode"] = "direct"
-    assert inst.site_to_env(site)["WRITE_MODE"] == "direct"
-    site["changes"]["write_mode"] = "yolo"
-    with pytest.raises(inst.SiteError, match="changes.write_mode"):
-        inst.site_to_env(site)
+    assert not [k for k in env if k.startswith("CHANGE_") or k in ("WRITE_MODE", "MCP_WRITE_ROLE")], sorted(env)
 
-
-def test_four_eyes_quoted_false_stays_off(inst, site):
-    site["changes"]["four_eyes"] = "false"
-    assert inst.site_to_env(site)["CHANGE_FOUR_EYES"] == "false"
-
-
-def test_management_interfaces_as_text_or_list(inst, site):
-    site["changes"]["management_interfaces"] = "GigabitEthernet0/0, mgmt0"
-    assert inst.site_to_env(site)["CHANGE_MANAGEMENT_INTERFACES"] == "GigabitEthernet0/0, mgmt0"
-    site["changes"]["management_interfaces"] = ["GigabitEthernet0/0", "mgmt0"]
-    assert inst.site_to_env(site)["CHANGE_MANAGEMENT_INTERFACES"] == "GigabitEthernet0/0,mgmt0"
-
-
-def test_change_rights_come_from_the_platforms_auth_block(inst, site):
-    site["ai_platform"]["auth"]["approve_role"] = "change-approvers"
-    env = inst.site_to_env(site)
-    assert env["CHANGE_APPROVE_ROLE"] == "change-approvers"
-    assert env["CHANGE_PROPOSE_ROLE"] == "darqcube-propose"
-    assert env["CHANGE_APPROVALS_AUDIENCE"] == "darqcube-approvals"
-    assert env["CHANGE_FRESH_SIGNIN_CLAIM"] == "auth_time"
-    site["ai_platform"]["auth"]["fresh_signin_claim"] = "iat"
-    assert inst.site_to_env(site)["CHANGE_FRESH_SIGNIN_CLAIM"] == "iat"
-    site["ai_platform"]["auth"]["fresh_signin_claim"] = "nbf"
-    with pytest.raises(inst.SiteError, match="fresh_signin_claim"):
-        inst.site_to_env(site)
-
-
-def test_unknown_changes_key_is_refused(inst, site):
-    site["changes"]["four_eye"] = True
-    assert any("changes.four_eye" in p for p in inst.validate_site(site))
-
-
-# --- the contract between the two files ------------------------------------
 
 def test_every_derived_key_exists_in_env_example(inst, site):
     """A derived setting with no matching variable would be silently dropped."""

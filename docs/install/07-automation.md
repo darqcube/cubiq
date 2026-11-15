@@ -154,7 +154,7 @@ make config-get DEV=router1
 make state DEV=mt-01
 make config-parsed DEV=router1
 make snapshot DEV=router1
-make config-put DEV=router1 FILE=change.txt
+make change-stage DEV=router1 FILE=change.txt   # then: make change-commit ID=<id> FP=<fingerprint>
 make check DEV=router1
 ```
 

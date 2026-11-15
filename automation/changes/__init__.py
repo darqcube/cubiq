@@ -1,14 +1,15 @@
-"""Device changes that a person approves before they reach a device.
+"""Device changes: staged, then committed once. The execution log.
 
-WRITE_MODE=approved (the default): a change is STAGED (device, exact lines,
-rollback, fingerprint), APPROVED by a person with the approve right through a
-path an AI agent cannot use, then COMMITTED once, within a short window, by the
-person who asked or the approver. WRITE_MODE=direct keeps the old single-step
-push for deployments that approve elsewhere — documented as unsafe.
+A change is STAGED (device, exact lines, rollback; checked against protected
+lines; fingerprinted with the device's configuration as read then), then
+COMMITTED once with that fingerprint and an idempotency key, refused before
+anything is sent when the device's configuration changed since. Only a caller
+with the execute scope does either. Whether a person approved the change is the
+connected platform's business (AgenticOps's Control), never this stack's.
 
-policy.py   the rules, pure functions: rights, binding, clocks, fingerprint
+policy.py   the rules, pure functions: shape, fingerprint, once, the device's configuration
 lines.py    protected lines, refused when a change is staged
-store.py    the changes and every decision on them, in SQLite
+store.py    the changes and every action on them, in SQLite (the execution log)
 
-docs/how-to/approve-changes.md
+docs/how-to/run-changes.md
 """

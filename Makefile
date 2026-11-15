@@ -133,15 +133,22 @@ config-get: ## Fetch a running config:  make config-get DEV=router1
 	  && cat automation/configs/$(DEV).cfg \
 	  || { cat automation/configs/$(DEV).cfg.part; echo; rm -f automation/configs/$(DEV).cfg.part; exit 1; }
 
-config-put: ## Push config lines (WRITE_MODE=direct only):  make config-put DEV=router1 FILE=change.txt
-	@set -o pipefail; jq -Rs '{lines: split("\n") | map(select(length > 0))}' < $(FILE) \
-	  | curl -sS --fail-with-body -X POST localhost:$(AUTOMATION_PORT)/device/$(DEV)/config \
-	      -H 'Content-Type: application/json' -d @-
+change-stage: ## Stage a change from this host (nothing sent):  make change-stage DEV=router1 FILE=change.txt
+	@set -o pipefail; jq -Rs --arg dev '$(DEV)' --arg user "$${USER:-operator}" \
+	  '{actor: {user: $$user, sub: $$user, via: "local"}, device: $$dev, source: "make", lines: split("\n") | map(select(length > 0))}' < $(FILE) \
+	  | curl -sS --fail-with-body -X POST localhost:$(AUTOMATION_PORT)/changes -H 'Content-Type: application/json' -d @- \
+	  | jq '{id, device, state, fingerprint, already_present, lines}'
 
-changes: ## Device changes, newest first (staged, approved, committed…): docs/how-to/approve-changes.md
-	@set -o pipefail; curl -sS --fail-with-body localhost:$(AUTOMATION_PORT)/changes | jq '.changes[] | {id, device, state, requester, approver, committer, lines}'
+change-commit: ## Push a staged change, once:  make change-commit ID=7f3a-c21e FP=<fingerprint>
+	@set -o pipefail; jq -n --arg fp '$(FP)' --arg key 'make-$(ID)' --arg user "$${USER:-operator}" \
+	  '{actor: {user: $$user, sub: $$user, via: "local"}, fingerprint: $$fp, idempotency_key: $$key}' \
+	  | curl -sS --fail-with-body -X POST localhost:$(AUTOMATION_PORT)/changes/$(ID)/commit -H 'Content-Type: application/json' -d @- \
+	  | jq '{id, device, state, error, result}'
 
-change-events: ## Every action on changes, allowed or refused, with the person and the agent
+changes: ## Device changes, newest first (staged, committed…): docs/how-to/run-changes.md
+	@set -o pipefail; curl -sS --fail-with-body localhost:$(AUTOMATION_PORT)/changes | jq '.changes[] | {id, device, state, requester, committer, lines}'
+
+change-events: ## The execution log: every action on changes, done or refused, with the caller and the agent
 	@set -o pipefail; curl -sS --fail-with-body 'localhost:$(AUTOMATION_PORT)/changes/events?limit=50' | jq -c '.events[]'
 
 state: ## Parsed operational state:  make state DEV=mt-01

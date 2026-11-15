@@ -19,7 +19,7 @@ the syslog hostname, and that is the identity join.
 ```
 
 `group=full` is needed for configuration changes. For read-only monitoring,
-`group=read` is enough — but `make config-put` will then fail.
+`group=read` is enough — but committing a change will then fail.
 
 ## 2. SNMPv3
 

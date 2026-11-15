@@ -256,7 +256,7 @@ make mcp-check
 approve right approves exactly that change through a path an agent's token
 cannot use, and the agent commits it once, within a short window. The rules,
 the rights (from your identity provider's groups) and the approvals routes for
-an approvals app: [approve-changes.md](approve-changes.md).
+an approvals app: [run-changes.md](run-changes.md).
 
 **`direct`:** the old single tool, `push_device_config`, gated only by the
 caller's `MCP_WRITE_ROLE`. For a deployment that approves changes elsewhere;

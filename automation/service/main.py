@@ -22,19 +22,15 @@ from pydantic import BaseModel, Field
 # Absolute imports only — automation/nornir/ and automation/textfsm/ shadow the
 # installed libraries if this package is imported any other way.
 from automation.assurance import normalise
-from automation.changes.policy import Refused
+from automation.changes.policy import Conflict, Refused
 from automation.changes.store import NotFound, Store
 from automation.nornir import tasks
 from automation.service import scheduler
 from automation.textfsm import parse as textfsm_parse
 from automation.ttp import parse as ttp_parse
 
-# approved (default): a device change is staged, approved by a person, then
-# committed (automation/changes/). direct: the old single-step push, for a
-# deployment that approves changes elsewhere. docs/how-to/approve-changes.md
-WRITE_MODE = (os.environ.get("WRITE_MODE") or "approved").strip().lower()
-if WRITE_MODE not in ("approved", "direct"):
-    raise SystemExit(f"WRITE_MODE must be approved or direct (got {WRITE_MODE!r})")
+# A device change is staged, then committed once (automation/changes/). There is no direct push: every write goes
+# through the execution log. docs/how-to/run-changes.md
 CHANGES_DB = os.environ.get("CHANGES_DB", "/var/lib/automation/changes.db")
 
 app = FastAPI(
@@ -55,8 +51,6 @@ def check_device_name(device: str) -> str:
     return device
 
 
-class ConfigPush(BaseModel):
-    lines: list[str] = Field(..., min_length=1, description="Configuration lines to send")
 
 
 @app.get("/healthz")
@@ -73,10 +67,10 @@ def start_scheduled_assurance():
 @app.get("/metrics", response_class=PlainTextResponse, include_in_schema=False)
 def metrics():
     """Scheduled assurance results and the changes per state, in Prometheus text format."""
-    lines = ["# HELP changes Device changes per state (approved changes: stage, a person approves, commit).",
+    lines = ["# HELP changes Device changes per state (staged, then committed once).",
              "# TYPE changes gauge"]
     lines += [f'changes{{state="{state}"}} {count}' for state, count in changes().counts().items()]
-    # One series per change staged in the last 24 h: its state, for the person following it (a portal card). The ids
+    # One series per change staged in the last 24 h: its state, for whoever follows it. The ids
     # are the store's own (four hex, a dash, four hex), so they need no escaping.
     lines += ["# HELP change_state The state of each change staged in the last 24 hours (1 = its current state).",
               "# TYPE change_state gauge"]
@@ -139,25 +133,6 @@ def device_state(
         raise HTTPException(502, f"{device}: {exc}") from exc
 
 
-@app.post("/device/{device}/config")
-def device_config_push(device: str, body: ConfigPush):
-    """Push configuration lines. The previous config is archived first.
-
-    WRITE_MODE=direct only. With approved (the default) a change is staged,
-    approved and committed through /changes, and this refuses.
-    """
-    check_device_name(device)
-    if WRITE_MODE != "direct":
-        raise HTTPException(403, "direct pushes are off (WRITE_MODE=approved): stage a change, have it approved, "
-                                 "then commit it — docs/how-to/approve-changes.md")
-    try:
-        return tasks.put_config(device, body.lines)
-    except tasks.DeviceError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(502, f"{device}: {exc}") from exc
-
-
 @app.post("/device/{device}/check")
 def device_check(device: str):
     """Run the assurance rules against a device.
@@ -213,10 +188,10 @@ def device_config_structured(device: str, kind: str = Query("interfaces")):
         raise HTTPException(502, f"{device}: {exc}") from exc
 
 
-# --- approved changes --------------------------------------------------------
-# The person and agent on every call come from the MCP layer, which verified
-# the caller's token (mcp-netmiko). This API trusts that, so it must not be
-# reachable from outside the host: AUTOMATION_BIND_IP defaults to loopback.
+# --- changes: stage, then commit once ----------------------------------------
+# The caller and agent on every call come from the MCP layer, which verified the
+# credential and its execute scope (mcp-netmiko). This API trusts that, so it must
+# not be reachable from outside the host: AUTOMATION_BIND_IP defaults to loopback.
 
 _store: Store | None = None
 _store_lock = threading.Lock()
@@ -233,10 +208,8 @@ def changes() -> Store:
 class Actor(BaseModel):
     user: str = Field(..., max_length=128)
     sub: str = Field(..., max_length=128)
-    roles: list[str] = Field(default_factory=list, max_length=200)
     via: str = Field(..., max_length=16)
     agent: str | None = Field(None, max_length=128)
-    auth_time: float | None = None
 
 
 class StageBody(BaseModel):
@@ -249,12 +222,19 @@ class StageBody(BaseModel):
 
 class ActBody(BaseModel):
     actor: Actor
-    reason: str = Field("", max_length=300)
+
+
+class PushBody(BaseModel):
+    actor: Actor
+    idempotency_key: str = Field(..., max_length=128)
+    fingerprint: str = Field("", max_length=64)
 
 
 def _change_call(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
+    except Conflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     except Refused as exc:
         raise HTTPException(403, str(exc)) from exc
     except NotFound as exc:
@@ -263,14 +243,19 @@ def _change_call(fn, *args, **kwargs):
 
 @app.post("/changes", status_code=201)
 def change_stage(body: StageBody):
-    """Stage a change: stored, fingerprinted, checked against protected lines. Nothing reaches the device."""
+    """Stage a change: checked, then fingerprinted with the device's configuration as read now (the dry run: which
+    lines it already holds). Nothing is sent to the device."""
     check_device_name(body.device)
+    actor = body.actor.model_dump()
+    # The lines first: a refused change costs no device session.
+    _change_call(changes().check_lines, actor, body.device, body.lines, body.rollback)
     try:
-        tasks.get_nornir(body.device)
+        config = tasks.get_config(body.device)["config"]
     except tasks.DeviceError as exc:
         raise HTTPException(404, str(exc)) from exc
-    return _change_call(changes().stage, body.actor.model_dump(), body.device, body.lines, body.rollback,
-                        source=body.source)
+    except Exception as exc:
+        raise HTTPException(502, f"{body.device}: cannot read its configuration to stage against: {exc}") from exc
+    return _change_call(changes().stage, actor, body.device, body.lines, body.rollback, config, source=body.source)
 
 
 @app.get("/changes")
@@ -280,7 +265,7 @@ def change_list(state: str | None = Query(None, max_length=16), limit: int = Que
 
 @app.get("/changes/events")
 def change_events(change_id: str | None = Query(None, max_length=16), limit: int = Query(200, ge=1, le=1000)):
-    """Every action on changes, allowed or refused, newest first: the audit."""
+    """Every action on changes, done or refused, newest first: the execution log."""
     return {"events": changes().events(limit=limit, change_id=change_id)}
 
 
@@ -289,27 +274,26 @@ def change_get(change_id: str):
     return _change_call(changes().get, change_id)
 
 
-@app.post("/changes/{change_id}/approve")
-def change_approve(change_id: str, body: ActBody):
-    return _change_call(changes().decide, change_id, body.actor.model_dump(), True, body.reason)
-
-
-@app.post("/changes/{change_id}/reject")
-def change_reject(change_id: str, body: ActBody):
-    return _change_call(changes().decide, change_id, body.actor.model_dump(), False, body.reason)
-
-
 @app.post("/changes/{change_id}/withdraw")
 def change_withdraw(change_id: str, body: ActBody):
     return _change_call(changes().withdraw, change_id, body.actor.model_dump())
 
 
-def _push(change_id: str, actor: dict, rollback: bool) -> dict:
+def _push(change_id: str, body: PushBody, rollback: bool) -> dict:
     store = changes()
-    change = _change_call(store.begin_commit, change_id, actor, rollback=rollback)
+    change, replayed = _change_call(store.begin_commit, change_id, body.actor.model_dump(), body.idempotency_key,
+                                    body.fingerprint, rollback=rollback)
+    if replayed:
+        return change
     lines = change["rollback"] if rollback else change["lines"]
+    # A commit pushes onto the configuration it was staged against, or not at all. A rollback undoes a push, whatever
+    # happened since.
+    expect = None if rollback else change.get("config_digest")
     try:
-        result = tasks.put_config(change["device"], lines)
+        result = tasks.put_config(change["device"], lines, expect_digest=expect)
+    except tasks.DeviceChanged as exc:
+        done = store.finish(change_id, refused=str(exc), rollback=rollback)
+        raise HTTPException(409, {"error": str(exc), "change": done}) from exc
     except Exception as exc:  # the push failed or may be partial: recorded, never retried by itself
         done = store.finish(change_id, error=f"{change['device']}: {exc}", rollback=rollback)
         raise HTTPException(502, {"error": str(exc), "change": done}) from exc
@@ -317,15 +301,15 @@ def _push(change_id: str, actor: dict, rollback: bool) -> dict:
 
 
 @app.post("/changes/{change_id}/commit")
-def change_commit(change_id: str, body: ActBody):
-    """Push an approved change, once, within its window. The previous config is archived first."""
-    return _push(change_id, body.actor.model_dump(), rollback=False)
+def change_commit(change_id: str, body: PushBody):
+    """Push a staged change, once: its fingerprint and an idempotency key. The previous config is archived first."""
+    return _push(change_id, body, rollback=False)
 
 
 @app.post("/changes/{change_id}/rollback")
-def change_rollback(change_id: str, body: ActBody):
-    """Push a committed change's declared rollback, once, within the hour."""
-    return _push(change_id, body.actor.model_dump(), rollback=True)
+def change_rollback(change_id: str, body: PushBody):
+    """Push a committed change's declared rollback, once (an idempotency key)."""
+    return _push(change_id, body, rollback=True)
 
 
 # --- pyATS / Genie ---------------------------------------------------------

@@ -23,7 +23,7 @@ cp .env.example .env
 # Each gets its OWN value: reusing one string across services means a leak
 # anywhere is a leak everywhere.
 for var in NEO4J_PASSWORD RABBITMQ_PASSWORD POSTGRES_PASSWORD \
-           INFRAHUB_SECRET_KEY INFRAHUB_ADMIN_TOKEN MCP_AUTH_TOKEN \
+           INFRAHUB_SECRET_KEY INFRAHUB_ADMIN_TOKEN MCP_AUTH_TOKEN MCP_EXECUTE_TOKEN \
            GRAFANA_ADMIN_PASSWORD RENDER_HOOK_SECRET; do
   secret=$(python3 -c "import secrets; print(secrets.token_hex(24))")
   # The delimiter is | because a hex secret can never contain one.
@@ -33,7 +33,7 @@ rm -f .env.bak
 
 echo "Generated .env with random secrets for:"
 echo "  NEO4J_PASSWORD  RABBITMQ_PASSWORD  POSTGRES_PASSWORD"
-echo "  INFRAHUB_SECRET_KEY  INFRAHUB_ADMIN_TOKEN  MCP_AUTH_TOKEN"
+echo "  INFRAHUB_SECRET_KEY  INFRAHUB_ADMIN_TOKEN  MCP_AUTH_TOKEN  MCP_EXECUTE_TOKEN"
 echo "  GRAFANA_ADMIN_PASSWORD  RENDER_HOOK_SECRET"
 echo
 echo "Still to fill in yourself — these cannot be generated:"

@@ -26,13 +26,18 @@ x-mcp: &mcp
   restart: unless-stopped
 
 x-mcp-env: &mcp-env
+  # The read token, and the execute token (stage, commit, rollback): two secrets.
   MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:?set in .env}
-  # token (shared secret) | oidc (the caller's own JWT) | both
+  MCP_EXECUTE_TOKEN: ${MCP_EXECUTE_TOKEN:-}
+  # token (the shared secrets) | oidc (the caller's own JWT) | both
   MCP_AUTH_MODE: ${MCP_AUTH_MODE:-token}
   MCP_OIDC_ISSUER: ${MCP_OIDC_ISSUER:-}
   MCP_OIDC_JWKS_URL: ${MCP_OIDC_JWKS_URL:-}
   MCP_OIDC_AUDIENCES: ${MCP_OIDC_AUDIENCES:-}
-  MCP_WRITE_ROLE: ${MCP_WRITE_ROLE:-darqcube-write}
+  # What a valid token may do (read or none), and each named client's scope (agenticops.yml access:).
+  MCP_OIDC_DEFAULT_SCOPE: ${MCP_OIDC_DEFAULT_SCOPE:-read}
+  MCP_OIDC_CLIENT_SCOPES: ${MCP_OIDC_CLIENT_SCOPES:-}
+  MCP_AGENT_CLAIM: ${MCP_AGENT_CLAIM:-azp}
   # Host headers accepted besides loopback and the compose name (421 otherwise).
   MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
   MCP_MAX_RESPONSE_BYTES: ${MCP_MAX_RESPONSE_BYTES:-524288}
@@ -115,16 +120,10 @@ services:
       MCP_SERVER: netmiko
       PORT: "9005"
       AUTOMATION_URL: http://automation:8100
-      # false (the default) means push_device_config is NOT REGISTERED — it is
-      # absent from tools/list entirely, not merely refused when called.
+      # false (the default) means the change tools are NOT REGISTERED — absent
+      # from tools/list entirely, not merely refused. True: they are, for callers
+      # with the execute scope. docs/how-to/run-changes.md
       MCP_ALLOW_WRITE: ${MCP_ALLOW_WRITE:-false}
-      # approved: stage/commit tools for agents, /changes for people (the
-      # approvals audience only). direct: push_device_config. approve-changes.md
-      WRITE_MODE: ${WRITE_MODE:-approved}
-      CHANGE_APPROVALS_AUDIENCE: ${CHANGE_APPROVALS_AUDIENCE:-darqcube-approvals}
-      CHANGE_APPROVE_ROLE: ${CHANGE_APPROVE_ROLE:-darqcube-approve}
-      MCP_AGENT_CLAIM: ${MCP_AGENT_CLAIM:-azp}
-      CHANGE_FRESH_SIGNIN_CLAIM: ${CHANGE_FRESH_SIGNIN_CLAIM:-auth_time}
     expose: ["9005"]
     ports: ["${MCP_BIND_IP:-127.0.0.1}:9005:9005"]
     healthcheck: *mcp-health

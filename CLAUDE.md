@@ -14,10 +14,17 @@ Genie genuinely returns data. pyATS is additive — never a platform's only path
 
 Built for demos, PoCs and small production networks — **sized and tested to 400 devices** on one
 Ubuntu box. It is deliberately not hardened: no TLS between components, no backup automation. Don't
-add them without being asked. **Device changes are the one exception (asked for):** with
-`WRITE_MODE=approved`, the default, an AI stages a change, a person approves it, and it is committed
-once, in time (`automation/changes/`, [docs/how-to/approve-changes.md](docs/how-to/approve-changes.md));
-the automation API is therefore on loopback (`AUTOMATION_BIND_IP`) and refuses a direct push.
+add them without being asked. **Device changes are the one exception (asked for):** a caller with
+the execute scope stages a change, then commits it once — with the staged fingerprint and an
+idempotency key, refused if the device's configuration changed since — and every action goes in the
+execution log (`automation/changes/`, [docs/how-to/run-changes.md](docs/how-to/run-changes.md)). There
+is no direct push; the automation API is on loopback (`AUTOMATION_BIND_IP`).
+
+**Authentication only, never policy (2.0.0).** The stack decides who a caller is and its scope —
+read or execute: the read and execute tokens, or an identity provider's client named in
+`agenticops.yml` — and nothing else. Approval, change rights, windows, four eyes, management
+interfaces and alert routing are the connected platform's (AgenticOps's Control); a person's roles
+in a token count for nothing here. Don't add a policy check to the stack: put it in the platform.
 
 `python3 install.py` is the primary install path: one stdlib-only file, seven steps, ending in
 pytest against the running stack. Keep it dependency-free — it runs on a freshly cloned repo before
@@ -191,9 +198,10 @@ A pyATS rule a platform cannot support returns **`skipped`** with the reason —
 | MikroTik SNMP | no vendor CPU MIB — uses HOST-RESOURCES-MIB `hrProcessorLoad` |
 | UDP buffers | the most consequential host setting. syslog and flow are UDP: an undersized `net.core.rmem_max` drops datagrams with **no error anywhere**, and the application's larger request is clamped without complaint. Only `netstat -su` shows it |
 | install.py | stdlib only — it runs before pip has been used. A test asserts no third-party imports |
-| Approved changes | the automation API trusts the person and agent mcp-netmiko verified and passes in the body — so it must stay unreachable from outside the host (`AUTOMATION_BIND_IP` loopback). Rights are roles from the token (`CHANGE_*_ROLE`), given to groups by the identity provider, never names |
-| Approved changes | the approvals audience (`CHANGE_APPROVALS_AUDIENCE`) must never be in `MCP_OIDC_AUDIENCES`: an agent's token would then approve. mcp-netmiko refuses to start if it is |
-| Approved changes | one element of `lines` is one command: a newline inside one would carry a second command past the protected-line rules, so staging refuses control characters |
+| Changes | the automation API trusts the caller and agent mcp-netmiko verified (and its execute scope) and passes in the body — so it must stay unreachable from outside the host (`AUTOMATION_BIND_IP` loopback) |
+| Changes | the scope comes from the credential: the read or execute token, or the OIDC client (`azp`) named in `MCP_OIDC_CLIENT_SCOPES`; never a role, a group or a name. The two tokens must differ, and `MCP_OIDC_DEFAULT_SCOPE` is never execute: both refused at start |
+| Changes | commit pushes only onto the configuration it was staged against (`config_digest`, compared on the archive fetch the push makes anyway: no extra session); volatile lines (comments, `ntp clock-period`) are ignored, or every commit would be refused. Add a vendor's self-changing line to `_VOLATILE` in `automation/changes/policy.py` |
+| Changes | one element of `lines` is one command: a newline inside one would carry a second command past the protected-line rules, so staging refuses control characters |
 | Device sessions | the inventory is cached, so `.filter()` views share `Host` objects and therefore the SSH connection. Every entry point that touches a device takes `device_lock(name)` — without it two concurrent requests interleave on one session. Pass `nr=` through when adding an operation, or you add a login |
 | Normalising | a normaliser reading a field the parser does not emit yields plausible but **wrong** booleans. `_require()` in `automation/assurance/normalise.py` exists because RouterOS flags live in `status`, not `flags` — reading the wrong key reported every running interface as down |
 | Parsing split | **TextFSM** for tabular `show` output, **TTP** for hierarchical config. Do not point TextFSM at a config file; it has no notion of nested blocks |
@@ -206,7 +214,7 @@ A pyATS rule a platform cannot support returns **`skipped`** with the reason —
 | Single-file bind mounts | `platforms.yml` is mounted as a file. `git pull` replaces it (new inode) and the running container keeps the old content — `docker compose restart infrahub-server` (and `automation`) after a pull that changes it, or `make render` renders the old platforms |
 | Genie fixtures | `automation/pyats/samples/*.json` are Genie's **own** golden test data, copied out of the installed package. Use them to test pyATS logic offline; don't hand-write Genie output |
 | MCP Host allow-list | the MCP SDK answers only `Host` headers on a server's allow-list and returns **421** for anything else — while `/healthz` (outside the MCP app) stays green. `FastMCP(name)` defaults to a loopback-only list; `common.build()` sets loopback + `mcp-<name>:*` + `MCP_ALLOWED_HOSTS`. `mcp` is pinned (`==1.30.*`) because a minor bump turned this on silently. Verify with `make mcp-check`, never `/healthz` |
-| MCP caller identity | the auth middleware puts the caller on the request scope; a tool reads it via its `Context` (`common.caller(ctx)` / `require_role(ctx)`). A ContextVar does **not** reach the tool — in a stateful session tools run in the session task, not the request task |
+| MCP caller identity | the auth middleware puts the caller on the request scope; a tool reads it via its `Context` (`common.caller(ctx)` / `require_scope(ctx, …)`). A ContextVar does **not** reach the tool — in a stateful session tools run in the session task, not the request task |
 | MCP sync tools | FastMCP runs a sync tool on the event loop; `common._Server` wraps every sync tool in a worker thread. Keep tools sync and let it — a slow device call otherwise stalls the whole server |
 | Graphs in chat | `render_interface_graph` returns a Markdown image LINK, never image bytes: chat platforms drop non-text tool content, and a PNG in model context costs thousands of tokens. The PNG lives in `mcp/images.py` (in memory, TTL, bounded); `/g/<id>.png` is a public route — the random id is the authorisation. It renders panels 1/2 of `darqcube-interface` by id; `test_graph_panels_keep_their_ids` guards that. A registered tool is replaced by its async wrapper, so tools must not call each other — share plain helpers (`_dashboard_url`) |
 | Graph renders | Grafana does not queue past `GF_RENDERING_CONCURRENT_RENDER_REQUEST_LIMIT`: it answers **200 image/png** with its own "limit reached" picture. `mcp-grafana` queues for `MCP_RENDER_LIMIT` slots (pinned equal), matches Grafana's placeholder images by hash (never shown as a graph), and shares identical renders for 60 s. `render_link_comparison` renders Link Share whole (`kiosk` + `_dash.hide*`) and Link SLA by panel id; its summary queries are the dashboards' queries (`test_link_comparison_dashboards_match_the_tool`) |
@@ -223,8 +231,10 @@ A pyATS rule a platform cannot support returns **`skipped`** with the reason —
 - **Name a specific ai-platform product** in code, docs or tests — say "ai-platform". Project-specific
   values (such as the header an ai-platform forwards tokens in) are passed as arguments, never
   hardcoded. `test_neutral.py` enforces this and the no-lab-addresses rule.
-- Register `push_device_config` when `MCP_ALLOW_WRITE` is false. It must be absent from `tools/list`,
-  not merely refuse when called. Note the flag gates the MCP **tool** only — the automation API
-  beneath has no auth, so it is not a system-wide write switch. Don't describe it as one. In
-  `oidc` mode it also calls `require_role(ctx)` before pushing — keep that first.
+- Register the change tools when `MCP_ALLOW_WRITE` is false. They must be absent from `tools/list`,
+  not merely refuse when called. Note the flag gates the MCP **tools** only — the automation API
+  beneath has no auth, so it is not a system-wide write switch. Don't describe it as one. Each
+  change tool calls `require_scope(ctx, "execute")` before reaching the API — keep that first.
+- Add a policy check (approval, rights, windows, four eyes, alert routing) to the stack: it is the
+  connected platform's. The stack authenticates (read or execute) and carries out.
 - Add a component that isn't in one of the four groups without saying why.

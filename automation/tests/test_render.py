@@ -1018,21 +1018,6 @@ def test_flow_totals_behave():
     assert r.returncode == 0, r.stdout + r.stderr
 
 
-def test_a_waiting_change_raises_an_alert():
-    """promtool unit test (observability/prometheus/tests/changes.test.yml): ChangeWaitingForApproval fires a minute
-    after a change starts waiting and clears when none waits."""
-    import shutil
-    import subprocess
-    if not shutil.which("docker"):
-        pytest.skip("docker not available")
-    version = re.search(r"^PROMETHEUS_VERSION=(\S+)", (ROOT / ".env.example").read_text(), re.M)
-    image = f"prom/prometheus:{version.group(1)}" if version else "prom/prometheus"
-    r = subprocess.run(["docker", "run", "--rm", "-v", f"{ROOT / 'observability/prometheus'}:/p:ro",
-                        "--entrypoint", "promtool", image, "test", "rules", "/p/tests/changes.test.yml"],
-                       capture_output=True, text=True, timeout=180)
-    assert r.returncode == 0, r.stdout + r.stderr
-
-
 # --- Auto-investigate: Infrahub decides which alerts start an AI investigation ------------------------------------
 INVESTIGATE = [
     Device("router1", "ios_xe", "10.0.0.11", "hq", "core-wan", investigate=True, interfaces="Tu.*, Et0/1",
@@ -1124,7 +1109,6 @@ def test_alertmanager_accepts_the_config_and_routes_as_intended(monkeypatch, tmp
         ("alertname=InterfaceDown", "device=switch1", "ifName=Gi1"): "notify",
         ("alertname=BGPPeerDown", "device=switch1", "severity=critical"): "notify",
         ("alertname=WANLatencyHigh", "device=router1"): "notify",
-        ("alertname=ChangeWaitingForApproval",): "notify",
     }
     for labels, want in cases.items():
         r = subprocess.run(run + ["config", "routes", "test", "--config.file=/etc/alertmanager-generated/alertmanager.yml",

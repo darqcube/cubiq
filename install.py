@@ -63,7 +63,7 @@ VENV = ROOT / ".venv"
 # reused everywhere means a leak anywhere is a leak everywhere.
 GENERATED = [
     "NEO4J_PASSWORD", "RABBITMQ_PASSWORD", "POSTGRES_PASSWORD",
-    "INFRAHUB_SECRET_KEY", "INFRAHUB_ADMIN_TOKEN", "MCP_AUTH_TOKEN",
+    "INFRAHUB_SECRET_KEY", "INFRAHUB_ADMIN_TOKEN", "MCP_AUTH_TOKEN", "MCP_EXECUTE_TOKEN",
     "GRAFANA_ADMIN_PASSWORD", "RENDER_HOOK_SECRET",
 ]
 
@@ -305,8 +305,7 @@ AUTH_MODES = ("token", "oidc", "both")
 AI_PLATFORM_KEYS = {
     "": {"enabled", "allow_write", "publish", "auth", "max_response_kb", "graphs"},
     "publish": {"enabled", "bind_ip"},
-    "auth": {"mode", "write_role", "approvals_audience", "fresh_signin_claim",
-             "propose_role", "approve_role", "commit_role", "commit_any_role"},
+    "auth": {"mode"},
 }
 
 # Keys that left site.yml in 2.0.0, and where they went. Named, not just refused:
@@ -318,6 +317,17 @@ MOVED_KEYS = {
     "ai_platform.auth.agent_claim": "agenticops.yml access.agent_claim",
     "ai_platform.alert_webhook_url": "agenticops.yml alerts.webhook (or alerts.webhook_url in site.yml)",
     "ai_platform.alert_profile": "site.yml alerts.profile",
+    # The guard left the stack in 2.0.0: approval, rights, windows, fresh sign-in, four eyes and management interfaces
+    # are the connected platform's policy (AgenticOps's Control). The stack authenticates: read or execute.
+    "ai_platform.auth.write_role": "the platform (the stack checks the execute scope, not roles)",
+    "ai_platform.auth.propose_role": "the platform (change rights are its policy)",
+    "ai_platform.auth.approve_role": "the platform (approval is its policy)",
+    "ai_platform.auth.commit_role": "the platform (change rights are its policy)",
+    "ai_platform.auth.commit_any_role": "the platform (change rights are its policy)",
+    "ai_platform.auth.approvals_audience": "the platform (approval is its policy)",
+    "ai_platform.auth.fresh_signin_claim": "the platform (approval is its policy)",
+    "changes": "the platform (approval, windows, fresh sign-in, four eyes and management interfaces are its policy; "
+               "the stack stages and commits once)",
 }
 
 # agenticops.yml: three sections, each optional.
@@ -330,33 +340,6 @@ CONNECTION_KEYS = {
 SCOPES = ("read", "execute")
 DEFAULT_SCOPES = ("read", "none")
 OVERLAY_PROTOCOLS = ("http", "tcp")
-
-# Device changes: the stack owner's policy (site.yml `changes:`), never the
-# connecting platform's. docs/how-to/approve-changes.md
-WRITE_MODES = ("approved", "direct")
-CHANGES_KEYS = {"write_mode", "approve_within_minutes", "commit_within_minutes", "rollback_within_minutes",
-                "fresh_signin_seconds", "four_eyes", "management_interfaces"}
-
-
-def changes_env(site: dict) -> dict[str, str]:
-    """How a device change is approved: the mode, the clocks, four eyes, management interfaces."""
-    env: dict[str, str] = {}
-    mode = str(dig(site, "changes.write_mode", "approved") or "approved").strip().lower()
-    if mode not in WRITE_MODES:
-        raise SiteError(f"changes.write_mode: expected one of {', '.join(WRITE_MODES)}, got {mode!r}")
-    env["WRITE_MODE"] = mode
-    for key, var, default in (("approve_within_minutes", "CHANGE_APPROVE_WITHIN_MINUTES", 120),
-                              ("commit_within_minutes", "CHANGE_COMMIT_WITHIN_MINUTES", 15),
-                              ("rollback_within_minutes", "CHANGE_ROLLBACK_WITHIN_MINUTES", 60),
-                              ("fresh_signin_seconds", "CHANGE_FRESH_SIGNIN_SECONDS", 300)):
-        env[var] = str(as_int(dig(site, f"changes.{key}"), f"changes.{key}", default))
-    env["CHANGE_FOUR_EYES"] = str(as_bool(dig(site, "changes.four_eyes"), "changes.four_eyes")).lower()
-    interfaces = dig(site, "changes.management_interfaces", "") or ""
-    if isinstance(interfaces, list):
-        interfaces = ",".join(str(i).strip() for i in interfaces if str(i).strip())
-    env["CHANGE_MANAGEMENT_INTERFACES"] = str(interfaces).strip()
-    return env
-
 
 def auth_mode(site: dict, connection: dict) -> str:
     """ai_platform.auth.mode, defaulting to oidc when agenticops.yml gives access, token otherwise."""
@@ -471,19 +454,6 @@ def ai_platform_env(site: dict, collector_ip: str, grafana_port: str, connection
 
     env["MCP_AUTH_MODE"] = auth_mode(site, connection)
     env.update(connection_env(connection))
-    env["MCP_WRITE_ROLE"] = str(dig(site, "ai_platform.auth.write_role", "") or "darqcube-write").strip()
-    # The platform's names for the change rights, the audience its approvals
-    # app signs in for, and the claim naming the calling agent.
-    for key, var, default in (("propose_role", "CHANGE_PROPOSE_ROLE", "darqcube-propose"),
-                              ("approve_role", "CHANGE_APPROVE_ROLE", "darqcube-approve"),
-                              ("commit_role", "CHANGE_COMMIT_ROLE", "darqcube-commit"),
-                              ("commit_any_role", "CHANGE_COMMIT_ANY_ROLE", "darqcube-commit-any"),
-                              ("approvals_audience", "CHANGE_APPROVALS_AUDIENCE", "darqcube-approvals"),
-                              ("fresh_signin_claim", "CHANGE_FRESH_SIGNIN_CLAIM", "auth_time")):
-        env[var] = str(dig(site, f"ai_platform.auth.{key}", "") or default).strip()
-    if env["CHANGE_FRESH_SIGNIN_CLAIM"] not in ("auth_time", "iat"):
-        raise SiteError("ai_platform.auth.fresh_signin_claim: expected auth_time or iat, "
-                        f"got {env['CHANGE_FRESH_SIGNIN_CLAIM']!r}")
     env["MCP_MAX_RESPONSE_BYTES"] = str(
         as_int(dig(site, "ai_platform.max_response_kb"), "ai_platform.max_response_kb", 512) * 1024
     )
@@ -520,9 +490,17 @@ def with_profile(profiles: str, name: str, wanted: bool) -> str:
 
 def moved_keys(site: dict) -> list[str]:
     """site.yml keys that left in 2.0.0, each with where it went."""
-    return [f"{key} moved to {where} in 2.0.0 — move its value there and remove it here "
-            f"(docs/how-to/connect-an-ai-platform.md)"
-            for key, where in MOVED_KEYS.items() if dig(site, key) is not None]
+    out = []
+    for key, where in MOVED_KEYS.items():
+        if dig(site, key) is None:
+            continue
+        if where.startswith("the platform"):
+            out.append(f"{key} left the stack in 2.0.0: it belongs to {where} — remove it here "
+                       f"(docs/how-to/run-changes.md)")
+        else:
+            out.append(f"{key} moved to {where} in 2.0.0 — move its value there and remove it here "
+                       f"(docs/how-to/connect-an-ai-platform.md)")
+    return out
 
 
 def validate_ai_platform(site: dict, connection: dict | None = None) -> list[str]:
@@ -616,7 +594,7 @@ def site_to_env(site: dict, connection: dict | None = None) -> dict[str, str]:
     """Site file (and agenticops.yml, if any) -> the .env variables they determine.
 
     Only the keys the files speak for. Everything else in .env.example
-    keeps its default, and the eight secrets are generated separately.
+    keeps its default, and the nine secrets are generated separately.
     """
     env: dict[str, str] = {}
 
@@ -664,7 +642,6 @@ def site_to_env(site: dict, connection: dict | None = None) -> dict[str, str]:
         as_bool(dig(site, "ai_platform.allow_write"), "ai_platform.allow_write")
     ).lower()
     env.update(ai_platform_env(site, env["SYSLOG_COLLECTOR_IP"], env["GRAFANA_PORT"], connection))
-    env.update(changes_env(site))
 
     return env
 
@@ -674,14 +651,10 @@ def validate_site(site: dict, connection: dict | None = None) -> list[str]:
     problems: list[str] = []
 
     # Typos in keys are silent otherwise — the value is simply never applied.
-    known = {"site", "devices", "scale", "ports", "alerts", "ai_platform", "source_of_truth", "changes"}
+    known = {"site", "devices", "scale", "ports", "alerts", "ai_platform", "source_of_truth"}
     for key in site:
-        if key not in known:
+        if key not in known and key != "changes":   # changes: is a moved key, explained below
             problems.append(f"unknown top-level key '{key}' — expected one of {sorted(known)}")
-    changes = site.get("changes") or {}
-    for key in changes if isinstance(changes, dict) else ():
-        if key not in CHANGES_KEYS:
-            problems.append(f"unknown key changes.{key} — expected one of {sorted(CHANGES_KEYS)}")
 
     name = dig(site, "site.name")
     if not name:

@@ -18,12 +18,10 @@ import traceback
 # Before anything imports common: it reads its settings at import time.
 os.environ.update({
     "MCP_ALLOW_WRITE": "true",
-    # These checks pin the one-step push's gates; approved mode has its own
-    # check (changes_check.py).
-    "WRITE_MODE": "direct",
     "MCP_ALLOWED_HOSTS": "192.0.2.10:*",
     "AUTOMATION_URL": "http://127.0.0.1:9",
     "MCP_AUTH_TOKEN": "test-token",
+    "MCP_EXECUTE_TOKEN": "exec-token",
 })
 sys.path.insert(0, "/app")
 
@@ -49,16 +47,18 @@ INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
 results: dict[str, list] = {}
 
 
-def token(roles=(), **overrides) -> str:
-    claims = {"iss": ISSUER, "aud": AUDIENCE, "sub": "u-1", "preferred_username": "alice",
-              "exp": int(time.time()) + 300, "realm_access": {"roles": list(roles)}}
+def token(azp="portal", **overrides) -> str:
+    claims = {"iss": ISSUER, "aud": AUDIENCE, "sub": "u-1", "preferred_username": "alice", "azp": azp,
+              "exp": int(time.time()) + 300, "realm_access": {"roles": ["darqcube-write", "darqcube-approve"]}}
     claims.update(overrides)
     return jwt.encode(claims, KEY, algorithm="RS256", headers={"kid": "test-key"})
 
 
-def verifier(mode: str) -> common.Verifier:
-    return common.Verifier(mode=mode, token="test-token", issuer=ISSUER,
-                           jwks_url="http://idp.example/jwks", audiences=[AUDIENCE])
+def verifier(mode: str, default_scope: str = "read") -> common.Verifier:
+    return common.Verifier(mode=mode, token="test-token", issuer=ISSUER, jwks_url="http://idp.example/jwks",
+                           audiences=[AUDIENCE], execute_token="exec-token",
+                           client_scopes={"platform-control": "execute", "platform-preprod": "read"},
+                           default_scope=default_scope)
 
 
 # One app for every mode: FastMCP's session manager can be started only once
@@ -78,14 +78,15 @@ def initialize(client, auth: str, host: str = "127.0.0.1:9005"):
 
 
 def call_push(client, auth: str) -> str:
-    """Open a session and call push_device_config; return the tool's text."""
+    """Open a session and call commit_device_change (an execute tool); return the tool's text."""
     first = initialize(client, auth)
     session = {"mcp-session-id": first.headers["mcp-session-id"], "Authorization": auth,
                "Host": "127.0.0.1:9005", **HEADERS}
     client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=session)
     reply = client.post("/mcp", headers=session, json={
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": "push_device_config", "arguments": {"device": "router1", "lines": ["x"]}}})
+        "params": {"name": "commit_device_change",
+                   "arguments": {"change_id": "7f3a-c21e", "fingerprint": "f" * 64, "idempotency_key": "key-0001"}}})
     return json.dumps(messages(reply))
 
 
@@ -122,11 +123,13 @@ def token_checks():
     check("token_wrong_401", lambda: (initialize(c, "Bearer nope").status_code == 401, ""))
     check("token_right_200", lambda: (initialize(c, "Bearer test-token").status_code == 200, ""))
     check("token_jwt_refused_in_token_mode",
-          lambda: (initialize(c, f"Bearer {token(['darqcube-write'])}").status_code == 401, ""))
+          lambda: (initialize(c, f"Bearer {token('platform-control')}").status_code == 401, ""))
     check("healthz_needs_no_auth", lambda: (c.get("/healthz").status_code in (200, 404), ""))
-    # Token caller = the operator: passes the role gate, then fails reaching the API.
-    out = call_push(c, "Bearer test-token")
-    check("token_caller_passes_role_gate", lambda: ("unreachable" in out and "lacks" not in out, out))
+    # The read token reads, and is refused by an execute tool; the execute token gets past the gate.
+    read = call_push(c, "Bearer test-token")
+    check("read_token_is_refused_by_an_execute_tool", lambda: ("needs execute" in read, read))
+    out = call_push(c, "Bearer exec-token")
+    check("execute_token_passes_the_scope_gate", lambda: ("unreachable" in out and "needs execute" not in out, out))
 
 
 def oidc_checks():
@@ -140,12 +143,20 @@ def oidc_checks():
           lambda: (initialize(c, f"Bearer {token(aud='someone-else')}").status_code == 401, ""))
     check("oidc_expired_401",
           lambda: (initialize(c, f"Bearer {token(exp=int(time.time()) - 600)}").status_code == 401, ""))
-    viewer = call_push(c, f"Bearer {token()}")
-    check("oidc_without_role_is_refused_by_the_tool",
-          lambda: ("lacks the 'darqcube-write' role" in viewer, viewer))
-    engineer = call_push(c, f"Bearer {token(['darqcube-write'])}")
-    check("oidc_with_role_passes_the_gate",
-          lambda: ("unreachable" in engineer and "lacks" not in engineer, engineer))
+    # A person's token carries roles that once gated changes: they count for nothing now. The client decides.
+    person = call_push(c, f"Bearer {token()}")
+    check("oidc_roles_count_for_nothing_only_the_client_scope",
+          lambda: ("needs execute" in person, person))
+    preprod = call_push(c, f"Bearer {token('platform-preprod')}")
+    check("oidc_read_client_is_refused_by_an_execute_tool", lambda: ("needs execute" in preprod, preprod))
+    control = call_push(c, f"Bearer {token('platform-control')}")
+    check("oidc_execute_client_passes_the_scope_gate",
+          lambda: ("unreachable" in control and "needs execute" not in control, control))
+    APP.verifier = verifier("oidc", default_scope="none")
+    check("default_scope_none_refuses_an_unnamed_client",
+          lambda: (initialize(c, f"Bearer {token()}").status_code == 401, ""))
+    check("default_scope_none_still_admits_a_named_client",
+          lambda: (initialize(c, f"Bearer {token('platform-preprod')}").status_code == 200, ""))
 
 
 def both_checks():
@@ -166,6 +177,15 @@ def startup_checks():
     check("oidc_without_issuer_refused_at_startup",
           lambda: (refuses(mode="oidc", token="", issuer="", jwks_url=""), ""))
     check("unknown_mode_refused_at_startup", lambda: (refuses(mode="open", token="x"), ""))
+    check("same_read_and_execute_token_refused_at_startup",
+          lambda: (refuses(mode="token", token="same", execute_token="same"), ""))
+    def bad_scopes():
+        try:
+            common.parse_client_scopes("platform-control=admin")
+        except SystemExit:
+            return True
+        return False
+    check("an_unknown_client_scope_is_refused_at_startup", lambda: (bad_scopes(), ""))
 
 
 def audit_checks():
@@ -185,20 +205,21 @@ def audit_checks():
     audit.setLevel(logging.INFO)
     try:
         APP.verifier = verifier("oidc")
-        call_push(c, f"Bearer {token(['darqcube-write'])}")
+        call_push(c, f"Bearer {token('platform-control')}")
     finally:
         audit.removeHandler(handler)
-    line = next((r for r in records if "tool=push_device_config" in r), "")
-    check("audit_names_user_and_tool",
-          lambda: (line.startswith("audit ") and "user=alice" in line and "via=oidc" in line, records))
-    check("audit_omits_arguments", lambda: ("router1" not in " ".join(records), records))
+    line = next((r for r in records if "tool=commit_device_change" in r), "")
+    check("audit_names_user_scope_and_tool",
+          lambda: (line.startswith("audit ") and "user=alice" in line and "via=oidc" in line
+                   and "scope=execute" in line, records))
+    check("audit_omits_arguments", lambda: ("7f3a-c21e" not in " ".join(records), records))
 
 
 def offload_checks():
     tools = netmiko.mcp._tool_manager.list_tools()
     check("tools_run_off_the_event_loop",
           lambda: (all(t.is_async for t in tools), {t.name: t.is_async for t in tools}))
-    push = next(t for t in tools if t.name == "push_device_config")
+    push = next(t for t in tools if t.name == "commit_device_change")
     check("context_is_not_exposed_as_an_argument",
           lambda: ("ctx" not in push.parameters.get("properties", {}), push.parameters))
 

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# `make writes-on` / `make writes-off`: whether an AI may change configuration on the devices.
-# The stack owner's choice, made on this host: the ai-platform cannot set it (install.py ignores an overlay's
-# allow_write). On, WRITE_MODE=approved (default): the change tools are registered — stage, then a person approves,
-# then commit (docs/how-to/approve-changes.md). On, WRITE_MODE=direct: push_device_config, gated by the write role.
-# Off: no change tool exists (tools/list does not offer one).
+# `make writes-on` / `make writes-off`: whether device configuration may be changed over MCP.
+# The stack owner's choice, made on this host (site.yml ai_platform.allow_write): a connected platform cannot set it.
+# On: the change tools are registered — stage, then commit once — for callers with the execute scope
+# (docs/how-to/run-changes.md). Off: no change tool exists (tools/list does not offer one).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 case "${1:-}" in on) want=true ;; off) want=false ;; *) echo "usage: $0 on|off" >&2; exit 2 ;; esac
@@ -25,4 +24,4 @@ fi
 
 docker compose up -d --wait --force-recreate mcp-netmiko >/dev/null
 python3 scripts/mcp-check.py | grep -E 'mcp-netmiko' || true
-echo "netmiko: 2 tools = read only, 7 = approved changes (stage, commit…), 3 = push_device_config (WRITE_MODE=direct)"
+echo "netmiko: 2 tools = read only, 7 = changes on (stage, commit, rollback, withdraw, get)"
