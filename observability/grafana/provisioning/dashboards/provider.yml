@@ -2,7 +2,7 @@ apiVersion: 1
 providers:
   - name: darqcube
     orgId: 1
-    folder: DarqCube
+    folder: Cubiq
     type: file
     disableDeletion: true
     allowUiUpdates: false
@@ -14,7 +14,7 @@ providers:
   # drawn from source-of-truth/map/. Same folder in the UI.
   - name: darqcube-generated
     orgId: 1
-    folder: DarqCube
+    folder: Cubiq
     type: file
     disableDeletion: true
     allowUiUpdates: false

@@ -5,9 +5,13 @@ exists so an agent doesn't rediscover the same constraints by breaking them.
 
 ## What this is
 
-A single-VM Docker Compose stack that collects telemetry from network devices, holds their intended
+**Cubiq** (renamed from DARQCUBE-AGENTICOPS-STACK in 2.0.0; GitHub `darqcube/cubiq`): an open-source,
+single-VM Docker Compose platform that collects telemetry from network devices, holds their intended
 state in Infrahub, automates get/put of configuration, and exposes all of it over MCP so an AI
-platform can use it. Cisco IOS-XE, Huawei VRP, MikroTik RouterOS.
+platform can use it. Cisco IOS-XE, Huawei VRP, MikroTik RouterOS. It is built for the community first:
+complete standalone, with AgenticOps an optional connection (`agenticops.yml`). The name "Cubiq" is
+prose only — container, image, label, volume, compose-project, metric, env-var and tool names
+(`darqcube…`, `MCP_…`) stay, so an upgrade keeps every container and its data.
 
 Device work is **Netmiko + TextFSM + TTP** for every vendor, with **pyATS/Genie added** wherever
 Genie genuinely returns data. pyATS is additive — never a platform's only path.

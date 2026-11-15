@@ -10,7 +10,7 @@ if you would rather run them yourself.
 Get the repo first — every command below runs from inside it:
 
 ```bash
-git clone <this repo> && cd DARQCUBE-AGENTICOPS-STACK
+git clone <this repo> && cd cubiq
 ```
 
 **One command:** `./scripts/prepare-ubuntu.sh` does everything in this section
@@ -73,7 +73,7 @@ sudo python3 install.py --fix-sysctl
 ## 1. The short way
 
 ```bash
-cd ~/DARQCUBE-AGENTICOPS-STACK    # after re-login you start in your home folder
+cd ~/cubiq    # after re-login you start in your home folder
 cp site.example.yml site.yml && chmod 600 site.yml
 ${EDITOR:-nano} site.yml          # six required values — see "What to fill in"
 python3 install.py

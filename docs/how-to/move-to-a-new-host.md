@@ -22,7 +22,7 @@ Size it first — [prerequisites](../install/01-prerequisites.md#sizing). A VM
 below the minimum fails part-way through the install, not at the start.
 
 ```bash
-git clone <this repo> && cd DARQCUBE-AGENTICOPS-STACK
+git clone <this repo> && cd cubiq
 ./scripts/prepare-ubuntu.sh          # packages, Docker, docker group
 # log out and back in, then cd back into the repo
 ```
@@ -33,7 +33,7 @@ From any machine that can reach both hosts. `.env` holds credentials: stream it
 rather than leaving a copy on the machine in between, and keep it private.
 
 ```bash
-OLD=user@<old-host>; NEW=user@<new-host>; REPO='~/DARQCUBE-AGENTICOPS-STACK'
+OLD=user@<old-host>; NEW=user@<new-host>; REPO='~/cubiq'
 
 ssh $OLD "cat $REPO/.env" | ssh $NEW "umask 077; cat > $REPO/.env"
 ssh $OLD "cd $REPO/source-of-truth/devices && tar cf - *.yml" \
@@ -60,7 +60,7 @@ On the new host, **from the repo folder** — `install.py` is looked up relative
 to where you are:
 
 ```bash
-cd ~/DARQCUBE-AGENTICOPS-STACK
+cd ~/cubiq
 sudo python3 install.py --fix-sysctl
 python3 install.py
 ```

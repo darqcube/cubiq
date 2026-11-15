@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DARQCUBE-AGENTICOPS-STACK installer.
+"""Cubiq installer.
 
     python3 install.py
 
@@ -996,7 +996,7 @@ def apply_sysctl(needs_fix: dict) -> None:
         return
     conf = Path("/etc/sysctl.d/99-darqcube.conf")
     lines = [
-        "# DARQCUBE-AGENTICOPS-STACK — UDP receive buffers.",
+        "# Cubiq — UDP receive buffers.",
         "# Devices push syslog and flow over UDP. An undersized socket buffer",
         "# drops datagrams silently: no error, no log line, no retransmit.",
     ]
@@ -1383,7 +1383,7 @@ STEPS = [
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Install DARQCUBE-AGENTICOPS-STACK.",
+        description="Install Cubiq.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Common options:")[-1],
     )
@@ -1402,7 +1402,7 @@ def main() -> int:
         ap.error(f"--ai-platform is the 1.x option: since 2.0.0 the connection is {CONNECTION.name} "
                  f"(--agenticops FILE). docs/how-to/connect-an-ai-platform.md")
 
-    print(f"{C['b']}DARQCUBE-AGENTICOPS-STACK{C['x']}")
+    print(f"{C['b']}Cubiq{C['x']}")
     print(f"{C['d']}single-VM network telemetry, source of truth and automation{C['x']}")
 
     if not ENV_EXAMPLE.exists():

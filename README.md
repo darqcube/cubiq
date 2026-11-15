@@ -1,7 +1,11 @@
-# DARQCUBE-AGENTICOPS-STACK
+# Cubiq
 
-A single-VM stack for **network intent, observability, automation and
-AgenticOps** — one source of truth that everything else is labelled from.
+**Cubiq** is an open-source, single-VM platform for **network intent,
+observability and automation** — one source of truth that everything else is
+labelled from — with MCP tools for AI agents on top. It is complete on its own;
+connecting [AgenticOps](docs/how-to/connect-an-ai-platform.md) (or another AI
+platform) is optional and takes one YAML file.
+
 Docker Compose, containers grouped and tagged by function, everything driven
 from YAML. Ships with **Cisco IOS-XE**, **Huawei VRP** and **MikroTik
 RouterOS**, and takes other platforms — Nokia SR Linux, Arista EOS, VyOS and
@@ -17,7 +21,7 @@ Built for demos, proofs of concept and small production networks —
 | **Network intent** | Infrahub holds what *should* exist — devices, sites, roles, platforms. Every metric and log line is labelled from it, so all four uses agree on what a device is | Infrahub UI · GraphQL · YAML + `make seed` |
 | **Observability** | Telegraf ingests SNMP, gNMI and NetFlow/IPFIX; Logstash ingests syslog. Dashboards, alerts and log search, per device, site and role | Grafana · Prometheus and Loki APIs |
 | **Automation** | Get and put configuration, parsed state, assurance checks, pre/post snapshots — Nornir, Netmiko, TextFSM, TTP and pyATS/Genie, across every vendor | `make` targets · REST API · [Python scripts](docs/how-to/automate-with-python.md) |
-| **AgenticOps** | The same capabilities as bounded MCP tools for an AI platform — read-only unless writing is explicitly enabled, and then every change approved by a person | [MCP servers](docs/how-to/connect-an-ai-platform.md) |
+| **AI agents (MCP)** | The same capabilities as bounded MCP tools — read-only unless writing is explicitly enabled, and then only for an execute credential, every change staged, committed once and logged. Connect AgenticOps for approvals, alert policy and Zero Trust | [MCP servers](docs/how-to/connect-an-ai-platform.md) · [changes](docs/how-to/run-changes.md) |
 
 Each use works on its own. Intent is the only one the others depend on.
 
@@ -28,7 +32,8 @@ log search and the automation API are all usable by a person with no AI
 involved.
 
 The seven MCP servers are an *additional* interface onto the same data. Nothing in
-the stack depends on them — set `ai_platform.enabled: false` in `site.yml`
+Cubiq depends on them, nor on AgenticOps: without `agenticops.yml` Cubiq runs
+standalone, and that is tested. Nothing in the stack depends on the MCP servers — set `ai_platform.enabled: false` in `site.yml`
 (which drops `mcp` from `COMPOSE_PROFILES`) and every other feature is
 unaffected. That is a structural property, not a claim: MCP sits at the bottom
 of the dependency graph with no inbound edges — no service waits for an MCP
@@ -168,7 +173,7 @@ On a fresh Ubuntu Server, prepare the host once — OS packages, Docker with the
 Compose plugin, and your user in the `docker` group:
 
 ```bash
-git clone <this repo> && cd DARQCUBE-AGENTICOPS-STACK
+git clone <this repo> && cd cubiq
 ./scripts/prepare-ubuntu.sh
 ```
 
@@ -193,7 +198,7 @@ reconnecting, but minimal and container images do not always ship it.)
 Then install:
 
 ```bash
-cd ~/DARQCUBE-AGENTICOPS-STACK                # re-login starts in your home folder
+cd ~/cubiq                # re-login starts in your home folder
 sudo python3 install.py --fix-sysctl          # UDP buffers, once per host
 cp site.example.yml site.yml && chmod 600 site.yml
 ls -l site.yml                                # confirm the copy landed
@@ -236,7 +241,7 @@ file is also the record of what you deployed.
 
 Run every command **from the repo folder**. After logging out and back in you
 start in your home directory, where `python3 install.py` fails with
-`can't open file '/home/<you>/install.py'` — `cd DARQCUBE-AGENTICOPS-STACK` first.
+`can't open file '/home/<you>/install.py'` — `cd cubiq` first.
 
 Before installing, check what is **yours to provide** — a VM of the right size,
 Ubuntu 22.04 or 24.04, network reachability in both directions between the VM
@@ -273,7 +278,7 @@ come from one image.
 
 ### Dashboards
 
-All in Grafana's **DarqCube** folder, linked to each other; Grafana opens on
+All in Grafana's **Cubiq** folder, linked to each other; Grafana opens on
 Network Overview.
 
 | Dashboard | Shows |

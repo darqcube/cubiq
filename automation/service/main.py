@@ -34,7 +34,7 @@ from automation.ttp import parse as ttp_parse
 CHANGES_DB = os.environ.get("CHANGES_DB", "/var/lib/automation/changes.db")
 
 app = FastAPI(
-    title="DarqCube Automation",
+    title="Cubiq Automation",
     description="Get and put information and configuration on network devices.",
     version="1.0",
 )

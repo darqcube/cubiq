@@ -20,8 +20,8 @@ save.
 
 ## Shipped dashboards
 
-All in the **DarqCube** folder, linked to each other from the top-right
-*DarqCube dashboards* menu. Grafana opens on **Network Overview**
+All in the **Cubiq** folder, linked to each other from the top-right
+*Cubiq dashboards* menu. Grafana opens on **Network Overview**
 (`GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH` in `compose/observability.yaml`).
 
 | Dashboard | uid | Source | Shows |

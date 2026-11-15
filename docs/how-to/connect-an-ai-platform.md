@@ -145,14 +145,14 @@ the JWKS URL is rewritten to an address the stack can reach. Add
 addresses):
 
 ```bash
-ssh <user>@192.0.2.10 mkdir -p ~/DARQCUBE-AGENTICOPS-STACK/sites
-scp ai-platform.site.yml <user>@192.0.2.10:~/DARQCUBE-AGENTICOPS-STACK/sites/ai-platform.yml
+ssh <user>@192.0.2.10 mkdir -p ~/cubiq/sites
+scp ai-platform.site.yml <user>@192.0.2.10:~/cubiq/sites/ai-platform.yml
 ```
 
 **3. On the stack VM**, apply it:
 
 ```bash
-cd ~/DARQCUBE-AGENTICOPS-STACK
+cd ~/cubiq
 git pull
 python3 install.py --step 2      # merges sites/ai-platform.yml into .env
 make mcp-apply                   # rebuild and recreate the MCP servers

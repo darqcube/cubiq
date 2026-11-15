@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# DARQCUBE-AGENTICOPS-STACK — one VM, four functional groups.
+# Cubiq — one VM, four functional groups.
 #
 # This file is deliberately thin. Each group lives in its own file under
 # compose/ so containers are organised by what they do:

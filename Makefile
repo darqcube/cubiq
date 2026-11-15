@@ -1,4 +1,4 @@
-# DARQCUBE-AGENTICOPS-STACK
+# Cubiq
 # Every command the stack needs. `make` on its own lists them.
 
 SHELL := /bin/bash
@@ -35,7 +35,7 @@ install: ## Install everything: preflight, configure, build, start, verify
 	@python3 install.py
 
 help: ## Show this help
-	@echo "DARQCUBE-AGENTICOPS-STACK"
+	@echo "Cubiq"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'

@@ -76,7 +76,7 @@ to one device per path (e.g. `device=~"branch-.*"`).
 
 | Where | What |
 |---|---|
-| Grafana → DarqCube → **Applications** | throughput by application and criticality, unclassified share, which devices carry each application |
+| Grafana → Cubiq → **Applications** | throughput by application and criticality, unclassified share, which devices carry each application |
 | Alert **CriticalApplicationSilent** | a `critical` application that carried traffic in the last 6 h has had none for 15 min |
 | MCP `get_flow_summary` (mcp-prometheus) | `by_application` next to `by_protocol` |
 

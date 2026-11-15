@@ -1,4 +1,4 @@
-"""DarqCube automation.
+"""Cubiq automation.
 
 IMPORT RULE — this package must ALWAYS be imported as `automation.<sub>`.
 
