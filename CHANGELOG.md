@@ -2,11 +2,71 @@
 
 Versions are git tags `vMAJOR.MINOR.PATCH` on `main`, newest first here.
 
-- **MAJOR**: something breaks for whoever deploys or calls the stack (an API, an MCP tool, a setting or the site file).
+- **MAJOR**: something breaks for whoever deploys or calls Cubiq (an API, an MCP tool, a setting or the site file).
 - **MINOR**: new features, backward compatible.
 - **PATCH**: fixes only.
 
-A platform that depends on a feature names the version it needs (for example: the approvals path needs 1.0.0 or later).
+A platform that depends on a feature names the version it needs (for example: the execute scope needs 2.0.0 or later).
+
+## 2.0.0 (unreleased)
+
+**The stack is now Cubiq**, and it **authenticates; it no longer decides policy.** Cubiq is complete standalone; a
+platform (AgenticOps, or another of the same shape) connects through one optional file. Approval, change rights, change
+windows, four eyes, management interfaces and alert routing are the connected platform's. Breaking: read
+*Upgrading* before you move a 1.x install.
+
+### Breaking
+- **The connection is `agenticops.yml`** (optional, gitignored, beside `site.yml`; `agenticops.example.yml`):
+  `access:` (the identity provider, `default_scope` read or none, and each client's scope: `clients: {id: read|execute}`),
+  `alerts.webhook`, `overlay.services`. Absent: standalone. It replaces `sites/ai-platform.yml` and
+  `ai_platform.auth.issuer`, `jwks_url`, `audiences`, `agent_claim`, `ai_platform.alert_webhook_url`; `install.py --ai-platform`
+  becomes `--agenticops`. `ai_platform.alert_profile` moves to `alerts.profile`. Publishing, graphs and the result cap
+  stay in `site.yml`.
+- **Scopes, not roles.** A caller has the `read` or the `execute` scope. Token mode has two secrets: `MCP_AUTH_TOKEN`
+  (read) and the new `MCP_EXECUTE_TOKEN` (execute, generated; must differ). With an identity provider the token's client
+  (`azp`) decides, from `MCP_OIDC_CLIENT_SCOPES`; any other valid token gets `MCP_OIDC_DEFAULT_SCOPE` (read or none,
+  never execute). A person's roles count for nothing. The audit line names the scope.
+- **Changes: stage, then commit once.** `stage_device_change` reads the device's configuration and returns the
+  fingerprint (lines, rollback and that configuration) and `already_present` (the dry run); nothing is sent.
+  `commit_device_change(change_id, fingerprint, idempotency_key)` pushes once: a retry with the same key returns the
+  first result, another key is refused (409), and a device whose configuration changed since the stage (comments,
+  timestamps and `ntp clock-period` ignored) is refused before anything is sent. `rollback_device_change(change_id,
+  idempotency_key)` once. Every change tool needs execute; `get_device_change` read. States: staged, committing,
+  committed, withdrawn, failed.
+- **Gone, to the connected platform:** the approvals path (`/changes…` on mcp-netmiko for people, the approvals
+  audience), the change rights (`propose`, `approve`, `commit`, `commit any` roles), the windows, fresh sign-in, four
+  eyes, management interfaces (`CHANGE_MANAGEMENT_INTERFACES`, the `management:` section of `protected.yml`),
+  `WRITE_MODE=direct` with `push_device_config` and `POST /device/{name}/config`, `make config-put`, and the
+  `ChangeWaitingForApproval` alert. `site.yml`'s `changes:` section and role keys stop the install, saying so.
+- **Every alert to both receivers.** Alertmanager has `notify` (`ALERT_WEBHOOK_URL`, Cubiq's own) and `platform`
+  (`PLATFORM_ALERT_WEBHOOK_URL`, from `agenticops.yml`); the `investigate` receiver and the routes built from
+  `auto_investigate` are gone. The three `auto_investigate` attributes stay in Infrahub as data a platform reads.
+  config-init writes Alertmanager's config from its template on every start.
+- **`docs/how-to/approve-changes.md` is `run-changes.md`.**
+
+### Features
+- `make change-stage DEV=… FILE=…` and `make change-commit ID=… FP=…`: stage and commit from the Cubiq host.
+- `scripts/ai-platform-connect.py` writes `agenticops.yml` (`--client ID=SCOPE`, `--default-scope`), and names where
+  each 1.x option went.
+- `docs/how-to/connect-an-ai-platform.md` is the guide for connecting AgenticOps directly, without Octelium.
+
+### Unchanged on purpose
+- The name "Cubiq" is prose only: the compose project (`darqcube`), images, labels, volumes, metrics, env-var and tool
+  names stay, so an upgrade keeps every container and its data. Grafana's folder is now shown as **Cubiq** (same
+  dashboards, same uids; an empty **DarqCube** folder may remain and can be deleted).
+- Protected lines (`reload`, `write erase`, removing a routing process, users and AAA) are still refused at staging.
+
+### Upgrading from 1.5.x
+1. **Close what is in flight:** no change may be waiting or approved (withdraw them). One left over is closed when the
+   automation API starts ("closed by the move to 2.0.0"): stage it again.
+2. **`git fetch --tags && git checkout v2.0.0`.** The repository is `darqcube/cubiq` on GitHub (the old URL redirects).
+3. **Move the connection:** generate `agenticops.yml` on the platform's host (`scripts/ai-platform-connect.py …
+   --client <control client>=execute`), copy it beside `site.yml`, and delete `sites/ai-platform.yml`.
+4. **Edit `site.yml`:** remove the `changes:` section and the `ai_platform.auth` keys other than `mode`; move
+   `ai_platform.alert_profile` to `alerts.profile`. `python3 install.py --step 2` names anything left.
+5. **Apply:** `python3 install.py --step 2` (it also generates `MCP_EXECUTE_TOKEN`), then `make up` and `make mcp-apply`.
+6. **The platform:** it must use the new change tools (fingerprint, idempotency key) and decide from every alert
+   itself; AgenticOps 2.0.0 does. Device usernames, Infrahub data and metrics need nothing.
 
 ## 1.5.1 (2026-11-05)
 
