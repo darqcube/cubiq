@@ -129,10 +129,9 @@ Change it after first login. `INFRAHUB_ADMIN_TOKEN` is an API token, not a UI
 password.
 
 Everything except Grafana and Infrahub is unauthenticated. The automation API
-is therefore published on loopback only (`AUTOMATION_BIND_IP`), and with
-`WRITE_MODE=approved` (the default) it refuses a direct push anyway: a device
-change is staged, approved by a person and committed
-([how-to/run-changes.md](how-to/run-changes.md)). Keep the other ports on
+is therefore published on loopback only (`AUTOMATION_BIND_IP`), and it has no
+direct push: a device change is staged, then committed once by a caller with the
+execute scope ([how-to/run-changes.md](how-to/run-changes.md)). Keep the other ports on
 a management network.
 
 Device-facing listeners are not UIs, but for reference: syslog
@@ -496,7 +495,7 @@ and deleted by `make clean`.
 | `grafana-data` | observability | `grafana` | users, sessions, preferences | little — dashboards come from the repo |
 | `alertmanager-data` | observability | `alertmanager` | silences and notification state | active silences |
 | `alertmanager-config` | observability | `config-init` writes, `alertmanager` reads | `webhook-url` (from `.env`) | nothing — regenerated at every start |
-| `automation-state` | automation | `automation` | staged device changes and every decision on them (who asked, approved, committed) | the change history and audit; changes waiting for approval |
+| `automation-state` | automation | `automation` | staged device changes and every action on them (who staged, committed, rolled back) | the execution log |
 
 **`neo4j-data` is only irreplaceable if Infrahub was edited through its UI.**
 Everything that arrived through `source-of-truth/devices/*.yml` rebuilds with

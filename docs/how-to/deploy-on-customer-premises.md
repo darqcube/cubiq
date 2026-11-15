@@ -128,13 +128,12 @@ Know what it is before you deploy it:
 
 ```
 GET  /device/{name}/config     dumps a running config
-POST /device/{name}/config     pushes configuration to a device
+POST /changes/{id}/commit      pushes a staged change to a device
 ```
 
 **It has no authentication**, so it is published on **loopback only** by default
-(`AUTOMATION_BIND_IP=127.0.0.1`), and with `WRITE_MODE=approved` (the default)
-the POST refuses: device changes are staged, approved by a person and committed
-([run-changes.md](run-changes.md)). The GET still returns running
+(`AUTOMATION_BIND_IP=127.0.0.1`); there is no direct push: device changes are
+staged, then committed once ([run-changes.md](run-changes.md)). The GET still returns running
 configurations — SNMP communities, local password hashes and keys — to anything
 on this host.
 
