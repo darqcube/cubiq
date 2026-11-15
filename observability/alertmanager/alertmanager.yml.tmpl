@@ -1,20 +1,16 @@
 # Alertmanager.
 #
-# THIS FILE IS A TEMPLATE. `make render` (render-inventory.py) writes the running config from it to
-# observability/telegraf/generated/alertmanager.yml, putting the auto-investigate routes it builds from
-# Infrahub at __AUTO_INVESTIGATE_ROUTES__, then reloads Alertmanager. Before the first render, config-init
-# copies it as it is (no routes: every alert notifies). Edit this file, not the generated copy.
+# THIS FILE IS A TEMPLATE. config-init (every `make up`) and `make render` write the running config from it to
+# observability/telegraf/generated/alertmanager.yml; `make render` also reloads Alertmanager. Edit this file, not the
+# generated copy.
 #
-# THIS IS THE AI-PLATFORM SEAM FOR ALERTS. Set ALERT_WEBHOOK_URL in .env to an
-# AI platform endpoint and every alert is delivered there — no other change to
-# the stack. Two receivers share that one URL; each delivery names its receiver
-# in the body ("receiver"), so the platform knows what is asked of it:
-#   investigate  start an AI investigation (read-only), from the device's
-#                auto_investigate policy in Infrahub (docs/how-to/auto-investigate.md)
-#   notify       tell people: every other alert
-# The URL is read from a file config-init writes (url_file), so neither this
-# template nor the generated config holds it. Left empty it points at a local
-# no-op, so the stack starts with no external dependency.
+# EVERY ALERT GOES TO TWO RECEIVERS, and nothing here decides which alert matters to whom:
+#   notify    this stack's own receiver, ALERT_WEBHOOK_URL (site.yml alerts.webhook_url)
+#   platform  a connected platform's, PLATFORM_ALERT_WEBHOOK_URL (agenticops.yml alerts.webhook)
+# Which alerts start an investigation, or reach which people, is the platform's policy. Each delivery names its
+# receiver in the body ("receiver"). The URLs are read from files config-init writes (url_file), so neither this
+# template nor the generated config holds them; an empty one points at a local no-op, so the stack starts with no
+# external dependency.
 route:
   receiver: notify
   group_by: [alertname, device]
@@ -22,19 +18,22 @@ route:
   group_interval: 5m
   repeat_interval: 4h
   routes:
-    # __AUTO_INVESTIGATE_ROUTES__
+    # Every alert to the platform; continue, so each also reaches the stack's own receiver below.
+    - receiver: platform
+      continue: true
     - matchers: [severity="critical"]
       receiver: notify
       repeat_interval: 1h
+    - receiver: notify
 
 receivers:
   - name: notify
     webhook_configs:
       - url_file: /etc/alertmanager/webhook-url
         send_resolved: true
-  - name: investigate
+  - name: platform
     webhook_configs:
-      - url_file: /etc/alertmanager/webhook-url
+      - url_file: /etc/alertmanager/platform-webhook-url
         send_resolved: true
 
 inhibit_rules:

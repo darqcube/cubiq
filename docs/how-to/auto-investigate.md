@@ -1,19 +1,14 @@
-# Choose which alerts start an AI investigation
+# Mark which alerts should start an AI investigation
 
-Every alert reaches the AI platform through one webhook (`ALERT_WEBHOOK_URL`). Alertmanager sends it to one of two
-receivers, and the platform reads which from the body's `"receiver"`:
+Since 2.0.0 the stack sends **every alert to every receiver**
+([change-alerts.md](change-alerts.md#sending-alerts-somewhere)): which alert
+matters to whom, and which one starts an AI investigation, is the connected
+platform's decision, not the stack's.
 
-| Receiver | Asks the platform to | Which alerts |
-|---|---|---|
-| `investigate` | start an AI investigation, read-only, and tell people | those a device's policy in Infrahub names |
-| `notify` | tell people | every other alert |
-
-An investigation never changes a device: a change it proposes is still staged, approved by a person and committed
-once ([run-changes.md](run-changes.md)).
-
-## The policy lives in Infrahub
-
-Three attributes on each **Device**, off unless set:
+The stack still keeps the place to record that intent per device, as data in
+Infrahub, so a platform can read it (through the Infrahub MCP server or
+GraphQL) and decide with it. Three attributes on each **Device**, off unless
+set:
 
 | Attribute | Value | Empty means |
 |---|---|---|
@@ -21,23 +16,11 @@ Three attributes on each **Device**, off unless set:
 | `auto_investigate_interfaces` | comma-separated `ifName` patterns, e.g. `Tu.*, Et0/1` | every interface |
 | `auto_investigate_protocols` | comma-separated: `bgp`, `ospf`, `isis`, `eigrp`, `rip` | every protocol the stack watches |
 
-With `auto_investigate` on, these alerts of that device go to `investigate`:
-
-| Alert | When |
-|---|---|
-| `DeviceUnreachable` | always |
-| `InterfaceDown` | its `ifName` matches one of the patterns (or any, when the list is empty) |
-| `BGPPeerDown` | `bgp` is listed (or the list is empty) |
-| `OSPFNeighborDown` | `ospf` is listed (or the list is empty) |
-
-A pattern is a regular expression for the **whole** name, as the device reports it in IF-MIB `ifName`. IOS-XE
-reports short names (`Gi1`, `Tu2`, `Et0/1`): `Tunnel2` matches nothing there, and `make render` warns about it. A `.`
-matches any character, so `Gi0/0.100` also matches `Gi0/0x100`; write `Gi0/0\.100` to be exact.
-
-**Protocols the stack watches today: BGP and OSPF** (`BGPPeerDown`, `OSPFNeighborDown`; OSPF on platforms with
-`ospf: true`, see [add-a-metric.md](add-a-metric.md)). `isis`, `eigrp` and `rip` are accepted and reported by
-`make render` ("not watched by the stack yet"): no neighbour state is collected for them, so no alert exists that
-could start an investigation.
+A pattern is meant as a regular expression for the **whole** name, as the device
+reports it in IF-MIB `ifName`. IOS-XE reports short names (`Gi1`, `Tu2`,
+`Et0/1`). The alerts these attributes are about: `DeviceUnreachable`,
+`InterfaceDown`, `BGPPeerDown`, `OSPFNeighborDown` (BGP and OSPF are the
+protocols the stack watches today).
 
 Set them in the Infrahub UI, or in the device's YAML:
 
@@ -51,24 +34,19 @@ Set them in the Infrahub UI, or in the device's YAML:
 ```
 
 ```bash
-make schema    # once, after an upgrade that adds the attributes
 make seed      # when the YAML changed
-make render    # writes observability/telegraf/generated/alertmanager.yml and reloads Alertmanager
 ```
 
-With [auto-render](auto-render.md) on, a change saved in Infrahub is applied by itself, like any other.
+## Moving from 1.x
 
-## Check which path an alert takes
-
-`make render` lists the routes it wrote and warns about anything that cannot take effect. To test one alert:
-
-```bash
-docker compose exec alertmanager amtool config routes test \
-  --config.file=/etc/alertmanager-generated/alertmanager.yml \
-  alertname=InterfaceDown device=router1 ifName=Tu2
-# investigate
-```
+1.x turned these attributes into Alertmanager routes: an `investigate` receiver
+for the alerts they named, `notify` for the rest. In 2.0.0 there is no
+`investigate` receiver: every alert goes to `notify` (the stack's own,
+`ALERT_WEBHOOK_URL`) and to `platform` (a connected platform's,
+`agenticops.yml` `alerts.webhook`). The attributes and their values stay as they
+were; a platform that acted on `"receiver": "investigate"` reads them instead.
 
 ## Maintenance
 
-A silence in the Alertmanager UI stops both receivers. Set a device's `status` to `maintenance` to stop polling it.
+A silence in the Alertmanager UI stops both receivers. Set a device's `status`
+to `maintenance` to stop polling it.

@@ -532,7 +532,7 @@ host, then restart or reload the service.
 | `observability/prometheus/profiles/` | `prometheus` | one alert profile, `${ALERT_PROFILE}.yml` (standard or demo), mounted on its own |
 | `observability/loki/` | `loki` | `loki.yml` |
 | `observability/grafana/provisioning/` | `grafana` | datasources and dashboards |
-| `observability/alertmanager/alertmanager.yml.tmpl` | `render-inventory.py`, `config-init` | the template for `generated/alertmanager.yml` (auto-investigate routes) |
+| `observability/alertmanager/alertmanager.yml.tmpl` | `render-inventory.py`, `config-init` | the source of `generated/alertmanager.yml`: every alert to `notify` and `platform` |
 | `observability/logstash/pipeline/` | `logstash` | the syslog pipeline |
 | `observability/logstash/patterns/` | `logstash` | vendor grok patterns |
 | `observability/telegraf/telegraf.conf` | `telegraf` | agent settings |

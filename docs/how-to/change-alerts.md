@@ -115,27 +115,27 @@ device:cpu_usage:max{role="core"} > 85
 
 ## Sending alerts somewhere
 
-Alertmanager delivers to one webhook, set in `.env`:
+Every alert goes to two receivers, each a webhook:
+
+| Receiver | URL | Set in |
+|---|---|---|
+| `notify` | `ALERT_WEBHOOK_URL` | `site.yml` `alerts.webhook_url` |
+| `platform` | `PLATFORM_ALERT_WEBHOOK_URL` | `agenticops.yml` `alerts.webhook` (a connected platform) |
 
 ```bash
-ALERT_WEBHOOK_URL=https://your-ai-platform.example/alerts
+python3 install.py --step 2 && docker compose up -d --force-recreate config-init alertmanager
 ```
 
-```bash
-docker compose up -d --force-recreate config-init alertmanager
-```
-
-Left empty, alerts collect in the Alertmanager UI and go nowhere — the stack
-starts with no external dependency.
-
-Two receivers share that URL: `investigate` (an AI investigation, from each device's policy in Infrahub) and
-`notify` (everything else); the body's `"receiver"` says which. Choosing what goes to `investigate`:
-[auto-investigate.md](auto-investigate.md).
+Either left empty delivers nowhere: alerts collect in the Alertmanager UI and the
+stack starts with no external dependency. The body's `"receiver"` says which
+receiver a delivery is for. The stack does not decide which alert matters to
+whom: a connected platform does, from what it receives (it may read each
+device's `auto_investigate` attributes in Infrahub: [auto-investigate.md](auto-investigate.md)).
 
 **Alertmanager has no environment-variable expansion of its own**, so
-`config-init` writes the URL to a file (`/etc/alertmanager/webhook-url`) that both receivers read (`url_file`), and
-`make render` writes the config itself from `observability/alertmanager/alertmanager.yml.tmpl`. Edit the `.tmpl`,
-never the rendered copy, then `make render`.
+`config-init` writes each URL to a file (`/etc/alertmanager/webhook-url`, `…/platform-webhook-url`) that its receiver
+reads (`url_file`), and writes the config itself from `observability/alertmanager/alertmanager.yml.tmpl` on every
+start (`make render` too, and reloads Alertmanager). Edit the `.tmpl`, never the written copy, then `make render`.
 
 For Slack, email or PagerDuty, add it to a receiver in the template:
 

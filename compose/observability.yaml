@@ -14,9 +14,9 @@ services:
 
   # Runs once, before the services that need it, and exits.
   #
-  # 1. Alertmanager has no environment-variable expansion of its own, so the one
-  #    value that must vary per install — where alerts are delivered — is
-  #    substituted here.
+  # 1. Alertmanager has no environment-variable expansion of its own, so the
+  #    values that vary per install — where alerts are delivered — are written
+  #    here, and its config is written from the template on every start.
   # 2. Telegraf will not start without the identity table (processors.lookup
   #    fails on a missing file), and a fresh install has none: the repo ships
   #    no inventory, so `make render` has nothing to write yet. An EMPTY table
@@ -30,6 +30,7 @@ services:
       com.darqcube.role: backend
     environment:
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      PLATFORM_ALERT_WEBHOOK_URL: ${PLATFORM_ALERT_WEBHOOK_URL:-}
     volumes:
       - ../observability/alertmanager/alertmanager.yml.tmpl:/src/alertmanager.yml.tmpl:ro
       - alertmanager-config:/out
@@ -38,27 +39,31 @@ services:
       - sh
       - -c
       - |
+        # Each URL in a file (url_file): the Alertmanager config never holds one (it may carry a shared secret).
+        # An empty one points at Alertmanager's own health endpoint, so delivery succeeds and does nothing, rather
+        # than filling the log with failures for an integration that was never set up.
         url="${ALERT_WEBHOOK_URL:-}"
         if [ -z "$$url" ]; then
-          # No external consumer configured. Point at Alertmanager's own health
-          # endpoint so delivery succeeds and does nothing, rather than filling
-          # the log with failures for an integration that was never set up.
           url="http://alertmanager:9093/-/ready"
-          echo "ALERT_WEBHOOK_URL is empty — alerts stay in the Alertmanager UI only."
+          echo "ALERT_WEBHOOK_URL is empty — the stack's own receiver delivers nowhere (Alertmanager UI only)."
         else
           echo "Alerts will be delivered to $$url"
         fi
-        # The URL in a file (url_file): the Alertmanager config never holds it, so make render can write that
-        # config without knowing the URL (it may carry the platform's shared secret).
         printf '%s' "$$url" > /out/webhook-url
         chmod 0644 /out/webhook-url
-        # The config itself is make render's (Infrahub's auto-investigate routes). Before the first render:
-        # the template as it is, every alert notifies.
-        if [ ! -e /generated/alertmanager.yml ]; then
-          cp /src/alertmanager.yml.tmpl /generated/alertmanager.yml
-          chmod 0644 /generated/alertmanager.yml
-          echo "no alertmanager.yml yet — the template until the first make render (every alert notifies)"
+        platform="${PLATFORM_ALERT_WEBHOOK_URL:-}"
+        if [ -z "$$platform" ]; then
+          platform="http://alertmanager:9093/-/ready"
+          echo "No platform connected (agenticops.yml alerts.webhook) — standalone."
+        else
+          echo "Alerts will also be delivered to the connected platform: $$platform"
         fi
+        printf '%s' "$$platform" > /out/platform-webhook-url
+        chmod 0644 /out/platform-webhook-url
+        # The config itself: the template, on every start (nothing in it is per install), so an upgrade's new
+        # routing takes effect at the next `make up` without a render.
+        cp /src/alertmanager.yml.tmpl /generated/alertmanager.yml
+        chmod 0644 /generated/alertmanager.yml
 
         for f in devices.json devices.yml; do
           if [ ! -e "/generated/$$f" ]; then

@@ -67,11 +67,11 @@ just are not delivered anywhere.
 ### Why it is a template
 
 **Alertmanager has no environment-variable expansion at all** — a `${VAR}` in
-its config is a hard parse failure. The `config-init` service writes the URL to a
-file both receivers read (`url_file`), and `make render` writes the config from the
-template with each device's auto-investigate routes
-([auto-investigate.md](../how-to/auto-investigate.md)); before the first render,
-config-init copies the template as it is.
+its config is a hard parse failure. The `config-init` service writes each URL to a
+file its receiver reads (`url_file`): `notify` (`ALERT_WEBHOOK_URL`) and `platform`
+(`PLATFORM_ALERT_WEBHOOK_URL`, a connected platform's). It also writes the config
+from the template on every start; `make render` does too, and reloads Alertmanager.
+Every alert goes to both receivers ([change-alerts.md](../how-to/change-alerts.md#sending-alerts-somewhere)).
 
 Edit the `.tmpl`, never the rendered copy, then:
 
