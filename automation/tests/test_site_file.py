@@ -339,22 +339,163 @@ def test_grafana_links_use_an_address_a_person_can_open(inst, site):
     assert inst.site_to_env(site)["GRAFANA_PUBLIC_URL"] == "http://192.0.2.10:13000"
 
 
-def test_oidc_needs_issuer_and_jwks(inst, site):
-    site["ai_platform"]["auth"]["mode"] = "oidc"
-    problems = inst.validate_ai_platform(site)
-    assert any("auth.issuer is required" in p for p in problems)
-    assert any("auth.jwks_url is required" in p for p in problems)
-    site["ai_platform"]["auth"].update(issuer="http://idp.example/realms/demo",
-                                       jwks_url="http://192.0.2.1:7080/realms/demo/certs")
+CONNECTION = {
+    "access": {
+        "issuer": "http://idp.example/realms/demo",
+        "jwks_url": "http://192.0.2.1:7080/realms/demo/certs",
+        "audiences": "cubiq",
+        "clients": {"platform-control": "execute", "platform-preprod": "read"},
+    },
+    "alerts": {"webhook": "http://192.0.2.1:9100/alerts"},
+}
+
+
+def connection(**changes):
+    """A valid agenticops.yml, as read, with the given sections replaced."""
+    import copy
+    out = copy.deepcopy(CONNECTION)
+    out.update(changes)
+    return out
+
+
+# --- standalone: no agenticops.yml ------------------------------------------
+
+def test_standalone_without_a_connection_file(inst, site):
+    """The stack is complete on its own: shared token, no identity provider, no platform webhook."""
     assert not inst.validate_ai_platform(site)
+    env = inst.site_to_env(site)
+    assert env["MCP_AUTH_MODE"] == "token"
+    assert env["MCP_OIDC_ISSUER"] == env["MCP_OIDC_JWKS_URL"] == env["MCP_OIDC_CLIENT_SCOPES"] == ""
+    assert env["PLATFORM_ALERT_WEBHOOK_URL"] == ""
+    assert env["MCP_OIDC_DEFAULT_SCOPE"] == "read"
+
+
+def test_the_example_connection_file_is_valid_and_agrees_with_pyyaml(inst):
+    path = ROOT / "agenticops.example.yml"
+    ours = inst.read_yaml(path)
+    assert ours == yaml.safe_load(path.read_text()), "the stdlib reader and PyYAML disagree on agenticops.example.yml"
+    assert not inst.validate_connection(ours)
+
+
+def test_the_connection_file_is_gitignored():
+    import subprocess
+    out = subprocess.run(["git", "check-ignore", "agenticops.yml"], cwd=ROOT, capture_output=True, text=True)
+    assert out.returncode == 0, "agenticops.yml names this deployment's addresses: it must be gitignored"
+
+
+# --- agenticops.yml -----------------------------------------------------------
+
+def test_a_connection_gives_oidc_and_each_clients_scope(inst, site):
+    site["ai_platform"]["auth"].pop("mode", None)
+    conn = connection()
+    assert not inst.validate_ai_platform(site, conn) and not inst.validate_connection(conn)
+    env = inst.site_to_env(site, conn)
+    assert env["MCP_AUTH_MODE"] == "oidc", "access: without a mode line means oidc"
+    assert env["MCP_OIDC_ISSUER"] == "http://idp.example/realms/demo"
+    assert env["MCP_OIDC_JWKS_URL"] == "http://192.0.2.1:7080/realms/demo/certs"
+    assert env["MCP_OIDC_CLIENT_SCOPES"] == "platform-control=execute,platform-preprod=read"
+    assert env["PLATFORM_ALERT_WEBHOOK_URL"] == "http://192.0.2.1:9100/alerts"
+
+
+def test_the_platform_webhook_is_separate_from_the_stacks_own(inst, site):
+    site.setdefault("alerts", {})["webhook_url"] = "http://192.0.2.50/hook"
+    env = inst.site_to_env(site, connection())
+    assert env["ALERT_WEBHOOK_URL"] == "http://192.0.2.50/hook"
+    assert env["PLATFORM_ALERT_WEBHOOK_URL"] == "http://192.0.2.1:9100/alerts"
+
+
+def test_access_needs_issuer_and_jwks(inst):
+    problems = inst.validate_connection(connection(access={"clients": {"c": "read"}}))
+    assert any("access.issuer is required" in p for p in problems)
+    assert any("access.jwks_url is required" in p for p in problems)
 
 
 def test_audiences_accept_a_list_or_a_csv(inst, site):
-    site["ai_platform"]["auth"]["audiences"] = ["a", "b"]
-    assert inst.site_to_env(site)["MCP_OIDC_AUDIENCES"] == "a,b"
-    site["ai_platform"]["auth"]["audiences"] = "a,b"
-    assert inst.site_to_env(site)["MCP_OIDC_AUDIENCES"] == "a,b"
+    for value in (["a", "b"], "a,b", "a, b"):
+        conn = connection(access={**CONNECTION["access"], "audiences": value})
+        assert inst.site_to_env(site, conn)["MCP_OIDC_AUDIENCES"] == "a,b"
 
+
+def test_execute_only_for_named_clients(inst):
+    """No default_scope of execute: a person's token, or any client, never gets the execute tools by default."""
+    problems = inst.validate_connection(connection(access={**CONNECTION["access"], "default_scope": "execute"}))
+    assert any("default_scope 'execute'" in p for p in problems)
+    problems = inst.validate_connection(connection(access={**CONNECTION["access"], "clients": {"x": "admin"}}))
+    assert any("access.clients.x 'admin'" in p for p in problems)
+
+
+def test_an_unknown_key_in_the_connection_is_refused(inst):
+    problems = inst.validate_connection({**CONNECTION, "changes": {"four_eyes": True}})
+    assert any("unknown key 'changes'" in p for p in problems)
+    problems = inst.validate_connection(connection(alerts={"webhok": "http://x"}))
+    assert any("unknown key 'webhok'" in p for p in problems)
+
+
+def test_a_platform_webhook_must_be_a_url(inst):
+    assert any("alerts.webhook" in p for p in inst.validate_connection(connection(alerts={"webhook": "not a url"})))
+
+
+def test_overlay_services_are_checked(inst):
+    good = connection(overlay={"services": {"infrahub": {"port": 9001, "protocol": "http"}}})
+    assert not inst.validate_connection(good)
+    bad = connection(overlay={"services": {"Infra_Hub": {"port": 0, "protocol": "udp"}}})
+    problems = inst.validate_connection(bad)
+    assert any("a DNS label" in p for p in problems)
+    assert any("port must be 1 to 65535" in p for p in problems)
+    assert any("protocol" in p for p in problems)
+
+
+def test_oidc_without_a_connection_is_refused(inst, site):
+    site["ai_platform"]["auth"]["mode"] = "oidc"
+    assert any("needs agenticops.yml" in p for p in inst.validate_ai_platform(site, {}))
+
+
+def test_token_mode_would_ignore_a_connection(inst, site):
+    site["ai_platform"]["auth"]["mode"] = "token"
+    assert any("would ignore it" in p for p in inst.validate_ai_platform(site, connection()))
+
+
+# --- 1.x settings: refused, saying where they went ---------------------------
+
+@pytest.mark.parametrize("key, value, where", [
+    ("auth.issuer", "http://idp.example/realms/demo", "access.issuer"),
+    ("auth.jwks_url", "http://192.0.2.1/certs", "access.jwks_url"),
+    ("auth.audiences", "a", "access.audiences"),
+    ("auth.agent_claim", "azp", "access.agent_claim"),
+    ("alert_webhook_url", "http://192.0.2.1/a", "alerts.webhook"),
+    ("alert_profile", "demo", "alerts.profile"),
+])
+def test_a_moved_key_names_where_it_went(inst, site, key, value, where):
+    node = site["ai_platform"]
+    *parents, leaf = key.split(".")
+    for part in parents:
+        node = node.setdefault(part, {})
+    node[leaf] = value
+    problems = inst.validate_ai_platform(site)
+    assert any(f"ai_platform.{key} moved to" in p and where in p for p in problems), problems
+    assert not any("unknown key" in p for p in problems), "a moved key must be explained, not called unknown"
+
+
+def test_the_1x_connection_file_stops_the_install(inst, tmp_path, monkeypatch, capsys):
+    old = tmp_path / "sites" / "ai-platform.yml"
+    old.parent.mkdir()
+    old.write_text("ai_platform:\n  publish:\n    enabled: true\n")
+    monkeypatch.setattr(inst, "ROOT", tmp_path)
+    monkeypatch.setattr(inst, "OLD_OVERLAY", old)
+    monkeypatch.setattr(inst, "configure_from_site", lambda *a, **k: pytest.fail("configured over a 1.x file"))
+    inst.configure(type("Args", (), {"from_site": None, "agenticops": None})())
+    out = capsys.readouterr().out
+    assert "no longer read" in out and "agenticops.yml" in out
+
+
+def test_the_1x_option_is_refused_with_a_pointer(tmp_path):
+    import subprocess, sys
+    out = subprocess.run([sys.executable, str(ROOT / "install.py"), "--ai-platform", "x.yml", "--check"],
+                         cwd=ROOT, capture_output=True, text=True)
+    assert out.returncode != 0 and "--agenticops" in out.stderr
+
+
+# --- the rest of ai_platform: still the stack's own --------------------------
 
 def test_an_unknown_auth_mode_or_key_is_refused(inst, site):
     site["ai_platform"]["auth"]["mode"] = "open"
@@ -376,20 +517,6 @@ def test_max_response_is_bounded_and_in_bytes(inst, site):
     assert any("max_response_kb" in p for p in inst.validate_ai_platform(site))
 
 
-def test_the_overlay_may_only_speak_for_ai_platform(inst, site):
-    """It is generated on another machine; it must not be able to change device
-    credentials, ports or anything else."""
-    with pytest.raises(inst.SiteError, match="may only contain 'ai_platform'"):
-        inst.merge_overlay(site, {"devices": {"ssh_password": "x"}}, "ai-platform.yml")
-
-
-def test_the_overlay_merges_over_the_site_file(inst, site):
-    merged = inst.merge_overlay(site, {"ai_platform": {"auth": {"mode": "oidc"}}}, "o.yml")
-    assert merged["ai_platform"]["auth"]["mode"] == "oidc"
-    assert merged["ai_platform"]["auth"]["write_role"] == "darqcube-write", "merge dropped a sibling"
-    assert merged["devices"] == site["devices"]
-
-
 def test_set_env_values_replaces_and_appends(inst):
     text = "A=1\nMCP_AUTH_MODE=token   # comment\n"
     out = inst.set_env_values(text, {"MCP_AUTH_MODE": "oidc", "MCP_OIDC_ISSUER": "http://i"})
@@ -397,24 +524,36 @@ def test_set_env_values_replaces_and_appends(inst):
     assert out.rstrip().endswith("MCP_OIDC_ISSUER=http://i"), "a key missing from an older .env was not added"
 
 
-def test_an_overlay_applies_to_an_existing_env(inst, tmp_path, monkeypatch):
-    """An install done without a site file still takes the overlay — and only
-    the MCP keys change."""
+def test_a_connection_applies_to_an_existing_env(inst, tmp_path, monkeypatch):
+    """An install done without a site file still takes agenticops.yml — and only its keys change."""
     env = tmp_path / ".env"
-    env.write_text("SYSLOG_COLLECTOR_IP=192.0.2.10\nGRAFANA_PORT=13000\nDEVICE_PASSWORD=keep\n"
-                   "MCP_ALLOW_WRITE=false\n")
-    overlay = tmp_path / "ai-platform.yml"
-    overlay.write_text("ai_platform:\n  publish:\n    enabled: true\n  auth:\n    mode: oidc\n"
-                       "    issuer: http://idp.example/realms/demo\n"
-                       "    jwks_url: http://192.0.2.1:7080/realms/demo/certs\n")
+    env.write_text("SYSLOG_COLLECTOR_IP=192.0.2.10\nMCP_BIND_IP=192.0.2.10\nMCP_AUTH_MODE=token\n"
+                   "DEVICE_PASSWORD=keep\nMCP_ALLOW_WRITE=false\nALERT_WEBHOOK_URL=http://192.0.2.50/keep\n")
+    conn = tmp_path / "agenticops.yml"
+    conn.write_text("access:\n  issuer: http://idp.example/realms/demo\n"
+                    "  jwks_url: http://192.0.2.1:7080/realms/demo/certs\n"
+                    "  clients:\n    platform-control: execute\n"
+                    "alerts:\n  webhook: http://192.0.2.1:9100/alerts\n")
     monkeypatch.setattr(inst, "ENV", env)
-    monkeypatch.setattr(inst, "local_addresses", lambda: set())
-    inst.apply_ai_platform_to_env(overlay)
+    inst.apply_connection_to_env(conn)
     values = inst.read_env(env)
-    assert values["MCP_BIND_IP"] == "192.0.2.10"
     assert values["MCP_AUTH_MODE"] == "oidc"
     assert values["MCP_OIDC_JWKS_URL"] == "http://192.0.2.1:7080/realms/demo/certs"
+    assert values["MCP_OIDC_CLIENT_SCOPES"] == "platform-control=execute"
+    assert values["PLATFORM_ALERT_WEBHOOK_URL"] == "http://192.0.2.1:9100/alerts"
+    assert values["ALERT_WEBHOOK_URL"] == "http://192.0.2.50/keep", "the stack's own receiver is not the connection's"
     assert values["DEVICE_PASSWORD"] == "keep" and values["MCP_ALLOW_WRITE"] == "false"
+    assert values["MCP_BIND_IP"] == "192.0.2.10", "publishing is site.yml's, not the connection's"
+
+
+def test_a_bad_connection_changes_nothing(inst, tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text("MCP_AUTH_MODE=token\n")
+    conn = tmp_path / "agenticops.yml"
+    conn.write_text("access:\n  issuer: not-a-url\n")
+    monkeypatch.setattr(inst, "ENV", env)
+    inst.apply_connection_to_env(conn)
+    assert env.read_text() == "MCP_AUTH_MODE=token\n"
 
 
 def test_graphs_are_off_unless_asked_for(inst, site):
@@ -440,102 +579,16 @@ def test_graphs_without_publish_are_refused(inst, site):
     assert any("ai_platform.graphs needs ai_platform.publish" in p for p in inst.validate_ai_platform(site))
 
 
-def test_overlay_switches_only_the_graphs_profile(inst, tmp_path, monkeypatch):
-    env = tmp_path / ".env"
-    env.write_text("SYSLOG_COLLECTOR_IP=192.0.2.10\nGRAFANA_PORT=13000\nCOMPOSE_PROFILES=devices,automation,mcp\n")
-    overlay = tmp_path / "ai-platform.yml"
-    overlay.write_text("ai_platform:\n  publish:\n    enabled: true\n  graphs: true\n")
-    monkeypatch.setattr(inst, "ENV", env)
-    monkeypatch.setattr(inst, "local_addresses", lambda: set())
-    inst.apply_ai_platform_to_env(overlay)
-    assert inst.read_env(env)["COMPOSE_PROFILES"] == "devices,automation,mcp,graphs"
-    overlay.write_text("ai_platform:\n  publish:\n    enabled: true\n  graphs: false\n")
-    inst.apply_ai_platform_to_env(overlay)
-    assert inst.read_env(env)["COMPOSE_PROFILES"] == "devices,automation,mcp"
-
-
-def test_the_overlay_may_name_the_alert_receiver(inst, site):
-    """The ai-platform host generates where alerts go, like every other setting
-    it needs; it wins over the site file's alerts.webhook_url."""
-    site.setdefault("alerts", {})["webhook_url"] = "http://192.0.2.50/hook"
-    assert inst.site_to_env(site)["ALERT_WEBHOOK_URL"] == "http://192.0.2.50/hook"
-    merged = inst.merge_overlay(site, {"ai_platform": {"alert_webhook_url": "http://192.0.2.1:9100/a/s"}}, "o.yml")
-    assert not inst.validate_ai_platform(merged)
-    assert inst.site_to_env(merged)["ALERT_WEBHOOK_URL"] == "http://192.0.2.1:9100/a/s"
-
-
-def test_an_alert_receiver_must_be_a_url(inst, site):
-    site["ai_platform"]["alert_webhook_url"] = "not a url"
-    assert any("alert_webhook_url" in p for p in inst.validate_ai_platform(site))
-
-
-def test_an_overlay_sets_the_alert_receiver_only_when_it_names_one(inst, tmp_path, monkeypatch):
-    env = tmp_path / ".env"
-    env.write_text("SYSLOG_COLLECTOR_IP=192.0.2.10\nGRAFANA_PORT=13000\nALERT_WEBHOOK_URL=http://192.0.2.50/keep\n")
-    overlay = tmp_path / "ai-platform.yml"
-    monkeypatch.setattr(inst, "ENV", env)
-    monkeypatch.setattr(inst, "local_addresses", lambda: set())
-    overlay.write_text("ai_platform:\n  publish:\n    enabled: true\n")
-    inst.apply_ai_platform_to_env(overlay)
-    assert inst.read_env(env)["ALERT_WEBHOOK_URL"] == "http://192.0.2.50/keep", "an overlay without the key changed it"
-    overlay.write_text('ai_platform:\n  publish:\n    enabled: true\n  alert_webhook_url: "http://192.0.2.1:9100/a/s"\n')
-    inst.apply_ai_platform_to_env(overlay)
-    assert inst.read_env(env)["ALERT_WEBHOOK_URL"] == "http://192.0.2.1:9100/a/s"
-    overlay.write_text('ai_platform:\n  publish:\n    enabled: true\n  alert_webhook_url: ""\n')
-    inst.apply_ai_platform_to_env(overlay)
-    assert inst.read_env(env)["ALERT_WEBHOOK_URL"] == "", "an empty value must switch alert delivery off"
-
-
 def test_alert_profile_defaults_to_standard(inst, site):
     site.get("alerts", {}).pop("profile", None)
     assert inst.site_to_env(site)["ALERT_PROFILE"] == "standard"
 
 
-def test_alert_profile_from_the_site_and_the_overlay_wins(inst, site):
+def test_alert_profile_comes_from_the_site(inst, site):
     site.setdefault("alerts", {})["profile"] = "demo"
     assert inst.site_to_env(site)["ALERT_PROFILE"] == "demo"
-    merged = inst.merge_overlay(site, {"ai_platform": {"alert_profile": "standard"}}, "o.yml")
-    assert not inst.validate_ai_platform(merged)
-    assert inst.site_to_env(merged)["ALERT_PROFILE"] == "standard"
 
 
 def test_an_unknown_alert_profile_is_refused(inst, site):
-    site["ai_platform"]["alert_profile"] = "fast"
+    site.setdefault("alerts", {})["profile"] = "fast"
     assert any("alert profile 'fast'" in p for p in inst.validate_ai_platform(site))
-
-
-def test_an_overlay_sets_the_alert_profile_only_when_it_names_one(inst, tmp_path, monkeypatch):
-    env = tmp_path / ".env"
-    env.write_text("SYSLOG_COLLECTOR_IP=192.0.2.10\nGRAFANA_PORT=13000\nALERT_PROFILE=demo\n")
-    overlay = tmp_path / "ai-platform.yml"
-    monkeypatch.setattr(inst, "ENV", env)
-    monkeypatch.setattr(inst, "local_addresses", lambda: set())
-    overlay.write_text("ai_platform:\n  publish:\n    enabled: true\n")
-    inst.apply_ai_platform_to_env(overlay)
-    assert inst.read_env(env)["ALERT_PROFILE"] == "demo", "an overlay without the key changed it"
-    overlay.write_text("ai_platform:\n  publish:\n    enabled: true\n  alert_profile: standard\n")
-    inst.apply_ai_platform_to_env(overlay)
-    assert inst.read_env(env)["ALERT_PROFILE"] == "standard"
-
-
-def test_an_overlay_cannot_switch_writes_when_merged(inst, site, capsys):
-    """Whether an AI may push configuration is the stack owner's: site.yml's value stands, an overlay's is ignored."""
-    site["ai_platform"]["allow_write"] = False
-    merged = inst.merge_overlay(site, {"ai_platform": {"allow_write": True}}, "ai-platform.yml")
-    assert inst.site_to_env(merged)["MCP_ALLOW_WRITE"] == "false"
-    assert "allow_write ignored" in capsys.readouterr().out
-    site["ai_platform"]["allow_write"] = True
-    merged = inst.merge_overlay(site, {"ai_platform": {"allow_write": False}}, "ai-platform.yml")
-    assert inst.site_to_env(merged)["MCP_ALLOW_WRITE"] == "true", "an old overlay must not switch the owner's writes off"
-
-
-def test_an_overlay_cannot_switch_writes_on_an_existing_env(inst, tmp_path, monkeypatch, capsys):
-    env = tmp_path / ".env"
-    env.write_text("SYSLOG_COLLECTOR_IP=192.0.2.10\nGRAFANA_PORT=13000\nMCP_ALLOW_WRITE=true\n")
-    overlay = tmp_path / "ai-platform.yml"
-    monkeypatch.setattr(inst, "ENV", env)
-    monkeypatch.setattr(inst, "local_addresses", lambda: set())
-    overlay.write_text("ai_platform:\n  allow_write: false\n  publish:\n    enabled: true\n")
-    inst.apply_ai_platform_to_env(overlay)
-    assert inst.read_env(env)["MCP_ALLOW_WRITE"] == "true", "the owner's setting stays"
-    assert "allow_write ignored" in capsys.readouterr().out

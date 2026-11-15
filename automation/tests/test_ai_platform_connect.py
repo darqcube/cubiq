@@ -1,5 +1,5 @@
-"""scripts/ai-platform-connect.py — generated on the ai-platform host, read by
-install.py on the stack VM. Offline: a throwaway local HTTP server plays the
+"""scripts/ai-platform-connect.py — generated on the platform's host as
+agenticops.yml, read by install.py on the stack. Offline: a throwaway local HTTP server plays the
 identity provider.
 
 The contract that matters: what the generator writes, install.py accepts —
@@ -85,58 +85,50 @@ def test_only_unreachable_key_hosts_are_rewritten(gen, uri, expected):
     assert gen.reachable_jwks(uri, "192.0.2.1") == expected
 
 
-def test_end_to_end_output_is_what_install_accepts(gen, inst, idp, tmp_path):
-    out = subprocess.run(
-        [sys.executable, str(SCRIPT), "--stack-host", "127.0.0.1", "--idp", idp,
-         "--jwks-host", "192.0.2.1", "--audience", "ai-platform", "--token-header", "X-Test-Token",
-         "--out", str(tmp_path)],
+def run(idp, tmp_path, *extra):
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "--stack-host", "127.0.0.1", "--idp", idp, "--jwks-host", "192.0.2.1",
+         "--out", str(tmp_path), *extra],
         capture_output=True, text=True, timeout=60,
     )
+
+
+def test_end_to_end_output_is_what_install_accepts(gen, inst, idp, tmp_path):
+    out = run(idp, tmp_path, "--audience", "cubiq", "--token-header", "X-Test-Token",
+              "--client", "platform-control=execute", "--client", "platform-preprod=read")
     assert out.returncode == 0, out.stderr
 
-    overlay_path = tmp_path / "ai-platform.site.yml"
-    overlay = inst.read_yaml(overlay_path)
-    assert overlay == yaml.safe_load(overlay_path.read_text()), "install.py reads it differently from YAML"
-    assert not inst.validate_ai_platform(overlay), inst.validate_ai_platform(overlay)
+    path = tmp_path / "agenticops.yml"
+    conn = inst.read_yaml(path)
+    assert conn == yaml.safe_load(path.read_text()), "install.py reads it differently from YAML"
+    assert not inst.validate_connection(conn), inst.validate_connection(conn)
 
-    auth = overlay["ai_platform"]["auth"]
-    assert auth["mode"] == "oidc"
-    assert auth["issuer"].startswith("http://localhost:"), "the issuer must stay as tokens carry it"
-    assert auth["jwks_url"].startswith("http://192.0.2.1:"), "keys must be fetched from a reachable host"
-    assert "allow_write" not in overlay["ai_platform"], "writes are the stack owner's, never the ai-platform's"
-    assert oct(overlay_path.stat().st_mode & 0o777) == "0o600"
+    access = conn["access"]
+    assert access["issuer"].startswith("http://localhost:"), "the issuer must stay as tokens carry it"
+    assert access["jwks_url"].startswith("http://192.0.2.1:"), "keys must be fetched from a reachable host"
+    assert access["clients"] == {"platform-control": "execute", "platform-preprod": "read"}
+    assert "alerts" not in conn, "written although not asked for"
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
 
-    env = inst.ai_platform_env(inst.merge_overlay({}, overlay, "o"), "192.0.2.10", "13000")
-    assert env["MCP_BIND_IP"] == "192.0.2.10" and env["MCP_AUTH_MODE"] == "oidc"
-    assert "alert_webhook_url" not in overlay["ai_platform"], "written although not asked for"
+    env = inst.ai_platform_env({}, "192.0.2.10", "13000", conn)
+    assert env["MCP_AUTH_MODE"] == "oidc"
+    assert env["MCP_OIDC_CLIENT_SCOPES"] == "platform-control=execute,platform-preprod=read"
+    assert env["MCP_BIND_IP"] == "127.0.0.1", "publishing is the stack owner's (site.yml), not the connection's"
 
 
 def test_the_alert_receiver_is_written_when_given(gen, inst, idp, tmp_path):
-    out = subprocess.run(
-        [sys.executable, str(SCRIPT), "--stack-host", "127.0.0.1", "--idp", idp,
-         "--jwks-host", "192.0.2.1", "--alert-webhook-url", "http://192.0.2.1:9100/alertmanager/s",
-         "--out", str(tmp_path)],
-        capture_output=True, text=True, timeout=60,
-    )
+    out = run(idp, tmp_path, "--alert-webhook-url", "http://192.0.2.1:9100/alertmanager/s")
     assert out.returncode == 0, out.stderr
-    overlay = inst.read_yaml(tmp_path / "ai-platform.site.yml")
-    assert not inst.validate_ai_platform(overlay), inst.validate_ai_platform(overlay)
-    assert overlay["ai_platform"]["alert_webhook_url"] == "http://192.0.2.1:9100/alertmanager/s"
+    conn = inst.read_yaml(tmp_path / "agenticops.yml")
+    assert not inst.validate_connection(conn), inst.validate_connection(conn)
+    assert conn["alerts"]["webhook"] == "http://192.0.2.1:9100/alertmanager/s"
+    assert inst.connection_env(conn)["PLATFORM_ALERT_WEBHOOK_URL"] == "http://192.0.2.1:9100/alertmanager/s"
 
 
-def test_the_fresh_signin_claim_is_written_when_given_and_reaches_the_env(gen, inst, idp, tmp_path):
-    """An identity provider that records no auth_time on the password grant needs iat. Generated only by the site file
-    before 1.2.0, a re-applied overlay put auth_time back, and every approval was refused as not fresh."""
-    out = subprocess.run(
-        [sys.executable, str(SCRIPT), "--stack-host", "127.0.0.1", "--idp", idp,
-         "--jwks-host", "192.0.2.1", "--fresh-signin-claim", "iat", "--out", str(tmp_path)],
-        capture_output=True, text=True, timeout=60,
-    )
-    assert out.returncode == 0, out.stderr
-    overlay = inst.read_yaml(tmp_path / "ai-platform.site.yml")
-    assert not inst.validate_ai_platform(overlay), inst.validate_ai_platform(overlay)
-    assert overlay["ai_platform"]["auth"]["fresh_signin_claim"] == "iat"
-    assert inst.site_to_env(overlay)["CHANGE_FRESH_SIGNIN_CLAIM"] == "iat"
+def test_a_bad_client_is_refused(idp, tmp_path):
+    out = run(idp, tmp_path, "--client", "platform-control=admin")
+    assert out.returncode == 2 and "CLIENT_ID=execute" in out.stderr
+    assert not (tmp_path / "agenticops.yml").exists()
 
 
 def test_snippet_registers_all_seven_servers(gen, tmp_path):
@@ -160,28 +152,12 @@ def test_an_unreachable_idp_fails_clearly(tmp_path):
         capture_output=True, text=True, timeout=60,
     )
     assert out.returncode == 1 and "cannot read" in out.stderr
-    assert not (tmp_path / "ai-platform.site.yml").exists()
+    assert not (tmp_path / "agenticops.yml").exists()
 
 
-def test_the_alert_profile_is_written_only_when_asked(gen, inst, idp, tmp_path):
-    base = [sys.executable, str(SCRIPT), "--stack-host", "127.0.0.1", "--idp", idp, "--jwks-host", "192.0.2.1"]
-    out = subprocess.run(base + ["--out", str(tmp_path)], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr
-    assert "alert_profile" not in inst.read_yaml(tmp_path / "ai-platform.site.yml")["ai_platform"]
-    out = subprocess.run(base + ["--alert-profile", "demo", "--out", str(tmp_path)], capture_output=True, text=True,
-                         timeout=60)
-    assert out.returncode == 0, out.stderr
-    overlay = inst.read_yaml(tmp_path / "ai-platform.site.yml")
-    assert overlay["ai_platform"]["alert_profile"] == "demo" and not inst.validate_ai_platform(overlay)
-
-
-def test_allow_write_is_ignored_and_says_why(gen, inst, idp, tmp_path):
-    out = subprocess.run(
-        [sys.executable, str(SCRIPT), "--stack-host", "127.0.0.1", "--idp", idp, "--jwks-host", "192.0.2.1",
-         "--allow-write", "--out", str(tmp_path)],
-        capture_output=True, text=True, timeout=60,
-    )
-    assert out.returncode == 0, out.stderr
-    assert "stack owner" in out.stderr and "writes-on" in out.stderr
-    overlay = inst.read_yaml(tmp_path / "ai-platform.site.yml")
-    assert "allow_write" not in overlay["ai_platform"]
+@pytest.mark.parametrize("option", ["--auth-mode=oidc", "--graphs", "--allow-write", "--fresh-signin-claim=iat",
+                                    "--write-role=x", "--alert-profile=demo", "--max-response-kb=64", "--bind-ip=x"])
+def test_a_1x_option_says_where_it_went(idp, tmp_path, option):
+    out = run(idp, tmp_path, option)
+    assert out.returncode == 1 and "moved to" in out.stderr, out.stderr
+    assert not (tmp_path / "agenticops.yml").exists()

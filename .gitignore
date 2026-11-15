@@ -35,6 +35,8 @@ compose.override.yml
 # Site file — contains credentials. Never commit.
 site.yml
 sites/*.yml
+# The AgenticOps connection — names this deployment's identity provider and addresses.
+agenticops.yml
 !sites/example.yml
 
 /net-commander

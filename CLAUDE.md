@@ -91,7 +91,7 @@ Use the Makefile rather than inventing `docker compose` invocations.
 | `make mcp-apply` | rebuild and recreate the seven MCP servers (after a pull or an `.env` change) |
 | `make mcp-check` | a real MCP handshake + `tools/list` against every server |
 | `make changes` / `make change-events` | staged device changes / every action on them, allowed or refused |
-| `python3 scripts/ai-platform-connect.py` | **on the ai-platform host**: generate `sites/ai-platform.yml` + the MCP server snippet |
+| `python3 scripts/ai-platform-connect.py` | **on the platform's host**: generate `agenticops.yml` + the MCP server snippet |
 
 ## Scale — 400 devices is the tested ceiling
 
@@ -210,7 +210,7 @@ A pyATS rule a platform cannot support returns **`skipped`** with the reason —
 | MCP sync tools | FastMCP runs a sync tool on the event loop; `common._Server` wraps every sync tool in a worker thread. Keep tools sync and let it — a slow device call otherwise stalls the whole server |
 | Graphs in chat | `render_interface_graph` returns a Markdown image LINK, never image bytes: chat platforms drop non-text tool content, and a PNG in model context costs thousands of tokens. The PNG lives in `mcp/images.py` (in memory, TTL, bounded); `/g/<id>.png` is a public route — the random id is the authorisation. It renders panels 1/2 of `darqcube-interface` by id; `test_graph_panels_keep_their_ids` guards that. A registered tool is replaced by its async wrapper, so tools must not call each other — share plain helpers (`_dashboard_url`) |
 | Graph renders | Grafana does not queue past `GF_RENDERING_CONCURRENT_RENDER_REQUEST_LIMIT`: it answers **200 image/png** with its own "limit reached" picture. `mcp-grafana` queues for `MCP_RENDER_LIMIT` slots (pinned equal), matches Grafana's placeholder images by hash (never shown as a graph), and shares identical renders for 60 s. `render_link_comparison` renders Link Share whole (`kiosk` + `_dash.hide*`) and Link SLA by panel id; its summary queries are the dashboards' queries (`test_link_comparison_dashboards_match_the_tool`) |
-| ai-platform overlay | `sites/ai-platform.yml` is generated on the ai-platform host (`scripts/ai-platform-connect.py`) and may contain **only** `ai_platform` — `merge_overlay` refuses anything else. Without a site file, `install.py` changes only the MCP keys in the existing `.env` (`set_env_values` appends keys an older `.env` lacks) |
+| the connection file | `agenticops.yml` (optional, gitignored, beside `site.yml`; `agenticops.example.yml`) connects AgenticOps: `access:` (issuer, JWKS, audiences, `default_scope` read or none, `clients:` id → read or execute), `alerts.webhook`, `overlay.services`. **Absent = standalone**, and that is tested. Every key is checked (`validate_connection`). It never holds a secret, and never site settings: publishing, graphs and the result cap stay in `site.yml`. 1.x's `sites/ai-platform.yml`, `--ai-platform` and the keys that moved (`MOVED_KEYS`) stop the install with where each went: never converted silently. Without a site file, `install.py` changes only the connection's keys in the existing `.env` (`set_env_values` appends keys an older `.env` lacks) |
 
 ## Don't
 

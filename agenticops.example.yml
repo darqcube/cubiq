@@ -1,0 +1,37 @@
+# agenticops.yml: connecting AgenticOps (or another platform of the same shape).
+#
+# OPTIONAL. Without this file the stack runs standalone: every feature works,
+# MCP callers use the shared token, alerts go only to site.yml's receiver.
+#
+#   cp agenticops.example.yml agenticops.yml     # or generate it on the platform's
+#   python3 install.py --step 2 && make mcp-apply # host: scripts/ai-platform-connect.py
+#
+# No secrets in this file. docs/how-to/connect-an-ai-platform.md
+
+access:
+  # Who may call the MCP servers: tokens from this identity provider.
+  # Exactly the "iss" claim in its tokens.
+  issuer: https://idp.example/realms/main
+  # Its signing keys, as reachable FROM THIS MACHINE.
+  jwks_url: https://idp.example/realms/main/protocol/openid-connect/certs
+  # Accepted "aud" values, comma-separated. Empty = not checked.
+  audiences: cubiq
+  # What any valid token may do: read (the read tools) or none.
+  default_scope: read
+  # Machine clients by OIDC client id: read, or execute (stage, commit,
+  # rollback). Give execute to the platform's control service only.
+  clients:
+    platform-control: execute
+  # The claim naming the calling agent, for the audit log.
+  agent_claim: azp
+
+alerts:
+  # Every alert is also sent here (besides site.yml's alerts.webhook_url).
+  webhook: https://agenticops.example/internal/alerts
+
+# overlay:
+#   # What this stack serves through an overlay network (names, local ports).
+#   services:
+#     infrahub:
+#       port: 9001
+#       protocol: http

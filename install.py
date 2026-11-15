@@ -23,9 +23,9 @@ Common options:
     --fix-sysctl     apply the kernel settings and stop (needs sudo)
     --skip-tests     stop after step 5
     --step N         run one step only
-    --ai-platform F  connect an ai-platform on another host: apply the file
-                     scripts/ai-platform-connect.py generated there
-                     (default: sites/ai-platform.yml, if present)
+    --agenticops F   connect AgenticOps (or another platform of the same shape):
+                     apply that connection file (default: ./agenticops.yml,
+                     if present; absent, the stack runs standalone)
 """
 from __future__ import annotations
 
@@ -49,9 +49,14 @@ ENV = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 SITE = ROOT / "site.yml"
 SITE_EXAMPLE = ROOT / "site.example.yml"
-# Generated on the ai-platform host by scripts/ai-platform-connect.py and copied
-# here. Gitignored (sites/*.yml): it names this deployment's addresses.
-AI_PLATFORM_OVERLAY = ROOT / "sites" / "ai-platform.yml"
+# The AgenticOps connection: who may call the MCP servers (access), where alerts
+# also go (alerts), and what is served through an overlay (overlay). Optional:
+# absent, the stack runs standalone. Generated on the platform's host by
+# scripts/ai-platform-connect.py, or written by hand. Gitignored: it names this
+# deployment's addresses. docs/how-to/connect-an-ai-platform.md
+CONNECTION = ROOT / "agenticops.yml"
+# Stack 1.x kept the connection here, merged over site.yml. Refused since 2.0.0.
+OLD_OVERLAY = ROOT / "sites" / "ai-platform.yml"
 VENV = ROOT / ".venv"
 
 # Secrets that only need to be unguessable. Each gets its own value: one string
@@ -298,12 +303,33 @@ PORT_VARS = {
 
 AUTH_MODES = ("token", "oidc", "both")
 AI_PLATFORM_KEYS = {
-    "": {"enabled", "allow_write", "publish", "auth", "max_response_kb", "graphs", "alert_profile",
-         "alert_webhook_url"},
+    "": {"enabled", "allow_write", "publish", "auth", "max_response_kb", "graphs"},
     "publish": {"enabled", "bind_ip"},
-    "auth": {"mode", "issuer", "jwks_url", "audiences", "write_role", "approvals_audience", "agent_claim", "fresh_signin_claim",
+    "auth": {"mode", "write_role", "approvals_audience", "fresh_signin_claim",
              "propose_role", "approve_role", "commit_role", "commit_any_role"},
 }
+
+# Keys that left site.yml in 2.0.0, and where they went. Named, not just refused:
+# an upgrade should say what to do, and never carry a value forward silently.
+MOVED_KEYS = {
+    "ai_platform.auth.issuer": "agenticops.yml access.issuer",
+    "ai_platform.auth.jwks_url": "agenticops.yml access.jwks_url",
+    "ai_platform.auth.audiences": "agenticops.yml access.audiences",
+    "ai_platform.auth.agent_claim": "agenticops.yml access.agent_claim",
+    "ai_platform.alert_webhook_url": "agenticops.yml alerts.webhook (or alerts.webhook_url in site.yml)",
+    "ai_platform.alert_profile": "site.yml alerts.profile",
+}
+
+# agenticops.yml: three sections, each optional.
+CONNECTION_KEYS = {
+    "": {"access", "alerts", "overlay"},
+    "access": {"issuer", "jwks_url", "audiences", "default_scope", "clients", "agent_claim"},
+    "alerts": {"webhook"},
+    "overlay": {"services"},
+}
+SCOPES = ("read", "execute")
+DEFAULT_SCOPES = ("read", "none")
+OVERLAY_PROTOCOLS = ("http", "tcp")
 
 # Device changes: the stack owner's policy (site.yml `changes:`), never the
 # connecting platform's. docs/how-to/approve-changes.md
@@ -332,12 +358,109 @@ def changes_env(site: dict) -> dict[str, str]:
     return env
 
 
-def ai_platform_env(site: dict, collector_ip: str, grafana_port: str) -> dict[str, str]:
-    """The MCP settings an ai-platform on another machine needs.
+def auth_mode(site: dict, connection: dict) -> str:
+    """ai_platform.auth.mode, defaulting to oidc when agenticops.yml gives access, token otherwise."""
+    default = "oidc" if connection.get("access") else "token"
+    return str(dig(site, "ai_platform.auth.mode", default) or default).strip().lower()
 
-    Separate from site_to_env because it is also applied to an EXISTING .env
-    (an install done without a site file): only these keys change there.
+
+def csv(value) -> str:
+    """A list or a comma-separated string, as one comma-separated string."""
+    if isinstance(value, list):
+        return ",".join(str(v).strip() for v in value if str(v).strip())
+    return ",".join(v.strip() for v in str(value or "").split(",") if v.strip())
+
+
+def connection_env(connection: dict) -> dict[str, str]:
+    """agenticops.yml -> .env: the identity provider, each client's scope, the platform's alert webhook.
+
+    Absent (an empty mapping) gives the standalone values: no issuer, no clients, no platform webhook.
     """
+    access = connection.get("access") or {}
+    clients = access.get("clients") or {}
+    return {
+        "MCP_OIDC_ISSUER": str(access.get("issuer") or "").strip(),
+        "MCP_OIDC_JWKS_URL": str(access.get("jwks_url") or "").strip(),
+        "MCP_OIDC_AUDIENCES": csv(access.get("audiences")),
+        "MCP_OIDC_DEFAULT_SCOPE": str(access.get("default_scope") or "read").strip().lower(),
+        # client id=scope pairs, sorted so a re-run writes the same line
+        "MCP_OIDC_CLIENT_SCOPES": ",".join(f"{cid}={str(scope).strip().lower()}"
+                                           for cid, scope in sorted(clients.items())),
+        "MCP_AGENT_CLAIM": str(access.get("agent_claim") or "azp").strip(),
+        "PLATFORM_ALERT_WEBHOOK_URL": str(dig(connection, "alerts.webhook", "") or "").strip(),
+    }
+
+
+def validate_connection(connection: dict, name: str = "agenticops.yml") -> list[str]:
+    """Problems in agenticops.yml. Every key is checked: a typo would otherwise be silently ignored."""
+    problems: list[str] = []
+    if not isinstance(connection, dict):
+        return [f"{name} must be a mapping"]
+    for section, allowed in CONNECTION_KEYS.items():
+        node = connection if not section else connection.get(section)
+        if node in (None, "", {}):
+            continue
+        if not isinstance(node, dict):
+            problems.append(f"{name}: {section} must be a mapping")
+            continue
+        for key in node:
+            if key not in allowed:
+                where = f"{name} {section}" if section else name
+                problems.append(f"unknown key '{key}' in {where} — expected one of {sorted(allowed)}")
+
+    access = connection.get("access") or {}
+    if isinstance(access, dict) and access:
+        for field in ("issuer", "jwks_url"):
+            if not re.match(r"^https?://\S+$", str(access.get(field) or "")):
+                problems.append(f"{name}: access.{field} is required — an http(s) URL "
+                                f"(generate the file on the platform's host: scripts/ai-platform-connect.py)")
+        default = str(access.get("default_scope") or "read").strip().lower()
+        if default not in DEFAULT_SCOPES:
+            problems.append(f"{name}: access.default_scope '{default}' — expected one of {', '.join(DEFAULT_SCOPES)} "
+                            "(execute is given to named clients only)")
+        clients = access.get("clients") or {}
+        if not isinstance(clients, dict):
+            problems.append(f"{name}: access.clients must map each client id to its scope, e.g. 'platform-control: execute'")
+        else:
+            for cid, scope in clients.items():
+                if not re.fullmatch(r"[A-Za-z0-9._:-]+", str(cid)):
+                    problems.append(f"{name}: access.clients '{cid}' is not a client id")
+                if str(scope).strip().lower() not in SCOPES:
+                    problems.append(f"{name}: access.clients.{cid} '{scope}' — expected one of {', '.join(SCOPES)}")
+
+    hook = str(dig(connection, "alerts.webhook", "") or "")
+    if hook and not re.match(r"^https?://\S+$", hook):
+        problems.append(f"{name}: alerts.webhook must be an http(s) URL, or empty")
+
+    services = dig(connection, "overlay.services", {}) or {}
+    if not isinstance(services, dict):
+        problems.append(f"{name}: overlay.services must map each service name to its port and protocol")
+    else:
+        for svc, spec in services.items():
+            if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?", str(svc)):
+                problems.append(f"{name}: overlay.services '{svc}' — a DNS label: lower case, digits, '-'")
+            if not isinstance(spec, dict):
+                problems.append(f"{name}: overlay.services.{svc} needs port and protocol")
+                continue
+            for key in spec:
+                if key not in ("port", "protocol"):
+                    problems.append(f"unknown key '{key}' in {name} overlay.services.{svc} — expected port, protocol")
+            port = spec.get("port")
+            if not (isinstance(port, int) and 1 <= port <= 65535):
+                problems.append(f"{name}: overlay.services.{svc}.port must be 1 to 65535")
+            if str(spec.get("protocol") or "http") not in OVERLAY_PROTOCOLS:
+                problems.append(f"{name}: overlay.services.{svc}.protocol — expected one of {', '.join(OVERLAY_PROTOCOLS)}")
+    return problems
+
+
+def ai_platform_env(site: dict, collector_ip: str, grafana_port: str, connection: dict | None = None) -> dict[str, str]:
+    """The MCP settings: where the servers answer, who may call them, and the result cap.
+
+    `connection` is agenticops.yml (empty: standalone). Separate from site_to_env
+    because it is also applied to an EXISTING .env (an install done without a
+    site file): only these keys change there.
+    """
+    connection = connection or {}
     env: dict[str, str] = {}
     publish = as_bool(dig(site, "ai_platform.publish.enabled"), "ai_platform.publish.enabled")
     # Empty bind_ip means the address devices already use for this host.
@@ -346,13 +469,8 @@ def ai_platform_env(site: dict, collector_ip: str, grafana_port: str) -> dict[st
     # The MCP SDK answers only Host headers it was told about (421 otherwise).
     env["MCP_ALLOWED_HOSTS"] = f"{bind}:*" if publish else ""
 
-    env["MCP_AUTH_MODE"] = str(dig(site, "ai_platform.auth.mode", "token") or "token").strip().lower()
-    env["MCP_OIDC_ISSUER"] = str(dig(site, "ai_platform.auth.issuer", "") or "").strip()
-    env["MCP_OIDC_JWKS_URL"] = str(dig(site, "ai_platform.auth.jwks_url", "") or "").strip()
-    audiences = dig(site, "ai_platform.auth.audiences", "") or ""
-    if isinstance(audiences, list):
-        audiences = ",".join(str(a).strip() for a in audiences if str(a).strip())
-    env["MCP_OIDC_AUDIENCES"] = str(audiences).strip()
+    env["MCP_AUTH_MODE"] = auth_mode(site, connection)
+    env.update(connection_env(connection))
     env["MCP_WRITE_ROLE"] = str(dig(site, "ai_platform.auth.write_role", "") or "darqcube-write").strip()
     # The platform's names for the change rights, the audience its approvals
     # app signs in for, and the claim naming the calling agent.
@@ -361,7 +479,6 @@ def ai_platform_env(site: dict, collector_ip: str, grafana_port: str) -> dict[st
                               ("commit_role", "CHANGE_COMMIT_ROLE", "darqcube-commit"),
                               ("commit_any_role", "CHANGE_COMMIT_ANY_ROLE", "darqcube-commit-any"),
                               ("approvals_audience", "CHANGE_APPROVALS_AUDIENCE", "darqcube-approvals"),
-                              ("agent_claim", "MCP_AGENT_CLAIM", "azp"),
                               ("fresh_signin_claim", "CHANGE_FRESH_SIGNIN_CLAIM", "auth_time")):
         env[var] = str(dig(site, f"ai_platform.auth.{key}", "") or default).strip()
     if env["CHANGE_FRESH_SIGNIN_CLAIM"] not in ("auth_time", "iat"):
@@ -391,9 +508,8 @@ ALERT_PROFILES = ("standard", "demo")
 
 
 def alert_profile(site: dict) -> str:
-    """ALERT_PROFILE: the overlay's ai_platform.alert_profile wins over the site's alerts.profile (as every overlay
-    value does); default standard."""
-    return str(dig(site, "ai_platform.alert_profile") or dig(site, "alerts.profile") or "standard").strip().lower()
+    """ALERT_PROFILE: the site's alerts.profile; default standard."""
+    return str(dig(site, "alerts.profile") or "standard").strip().lower()
 
 
 def with_profile(profiles: str, name: str, wanted: bool) -> str:
@@ -402,19 +518,28 @@ def with_profile(profiles: str, name: str, wanted: bool) -> str:
     return ",".join(items + ([name] if wanted else []))
 
 
-def validate_ai_platform(site: dict) -> list[str]:
-    """Problems in the ai_platform block — from site.yml or the overlay."""
-    problems: list[str] = []
+def moved_keys(site: dict) -> list[str]:
+    """site.yml keys that left in 2.0.0, each with where it went."""
+    return [f"{key} moved to {where} in 2.0.0 — move its value there and remove it here "
+            f"(docs/how-to/connect-an-ai-platform.md)"
+            for key, where in MOVED_KEYS.items() if dig(site, key) is not None]
+
+
+def validate_ai_platform(site: dict, connection: dict | None = None) -> list[str]:
+    """Problems in site.yml's ai_platform block, read together with agenticops.yml (empty: standalone)."""
+    connection = connection or {}
+    problems: list[str] = moved_keys(site)
     block = dig(site, "ai_platform", {}) or {}
     if not isinstance(block, dict):
         return ["ai_platform must be a mapping"]
+    moved = {k.split(".")[-1] for k in MOVED_KEYS if k.startswith("ai_platform.")}
     for section, allowed in AI_PLATFORM_KEYS.items():
         node = block if not section else (block.get(section) or {})
         if not isinstance(node, dict):
             problems.append(f"ai_platform.{section} must be a mapping")
             continue
         for key in node:
-            if key not in allowed:
+            if key not in allowed and key not in moved:
                 where = f"ai_platform.{section}" if section else "ai_platform"
                 problems.append(f"unknown key '{key}' in {where} — expected one of {sorted(allowed)}")
 
@@ -449,21 +574,15 @@ def validate_ai_platform(site: dict) -> list[str]:
     if alert_profile(site) not in ALERT_PROFILES:
         problems.append(f"alert profile '{alert_profile(site)}' — expected one of {', '.join(ALERT_PROFILES)}")
 
-    mode = str(dig(site, "ai_platform.auth.mode", "token") or "token").strip().lower()
+    mode = auth_mode(site, connection)
     if mode not in AUTH_MODES:
         problems.append(f"ai_platform.auth.mode '{mode}' — expected one of {', '.join(AUTH_MODES)}")
-    elif mode in ("oidc", "both"):
-        for field in ("issuer", "jwks_url"):
-            value = str(dig(site, f"ai_platform.auth.{field}", "") or "")
-            if not re.match(r"^https?://\S+$", value):
-                problems.append(
-                    f"ai_platform.auth.{field} is required for mode {mode} — an http(s) URL "
-                    f"(generate it on the ai-platform host: scripts/ai-platform-connect.py)"
-                )
-
-    hook = str(dig(site, "ai_platform.alert_webhook_url", "") or "")
-    if hook and not re.match(r"^https?://\S+$", hook):
-        problems.append("ai_platform.alert_webhook_url must be an http(s) URL, or empty")
+    elif mode in ("oidc", "both") and not connection.get("access"):
+        problems.append(f"ai_platform.auth.mode {mode} needs agenticops.yml with an access: section "
+                        "(the identity provider and its clients) — or mode token")
+    elif mode == "token" and connection.get("access"):
+        problems.append("agenticops.yml gives access, but ai_platform.auth.mode is token, which would ignore it — "
+                        "set mode oidc (or both), or remove the mode line")
 
     try:
         kb = as_int(dig(site, "ai_platform.max_response_kb"), "ai_platform.max_response_kb", 512)
@@ -472,39 +591,6 @@ def validate_ai_platform(site: dict) -> list[str]:
     except SiteError as exc:
         problems.append(str(exc))
     return problems
-
-
-def drop_allow_write(overlay: dict, name: str) -> dict:
-    """An overlay's ai_platform.allow_write, removed with a note: the stack owner decides writes, not the ai-platform
-    that generated the overlay (older generators still wrote it)."""
-    block = overlay.get("ai_platform")
-    if not isinstance(block, dict) or "allow_write" not in block:
-        return overlay
-    warn(f"{name}: ai_platform.allow_write ignored — whether an AI may push configuration is the stack owner's "
-         "choice: site.yml, or `make writes-on` / `make writes-off` on this host")
-    return {**overlay, "ai_platform": {k: v for k, v in block.items() if k != "allow_write"}}
-
-
-def merge_overlay(site: dict, overlay: dict, name: str) -> dict:
-    """Deep-merge an ai-platform overlay over the site file.
-
-    The overlay may only speak for `ai_platform` — it is generated on another
-    machine, and must not be able to change device credentials or ports, nor
-    whether an AI may push configuration to the devices: `allow_write` is the
-    stack owner's (site.yml, or `make writes-on`), so an overlay's is ignored.
-    """
-    extra = set(overlay) - {"ai_platform"}
-    if extra:
-        raise SiteError(f"{name} may only contain 'ai_platform' — found {sorted(extra)}")
-    overlay = drop_allow_write(overlay, name)
-
-    def merge(base: dict, top: dict) -> dict:
-        out = dict(base)
-        for key, value in top.items():
-            out[key] = merge(out.get(key) or {}, value) if isinstance(value, dict) else value
-        return out
-
-    return merge(site, overlay)
 
 
 def set_env_values(text: str, values: dict[str, str]) -> str:
@@ -521,15 +607,15 @@ def set_env_values(text: str, values: dict[str, str]) -> str:
         else:
             missing.append(f"{key}={value}")
     if missing:
-        text = text.rstrip("\n") + "\n\n# --- ai-platform on another host (added by install.py) ---\n"
+        text = text.rstrip("\n") + "\n\n# --- added by install.py (a setting newer than this .env) ---\n"
         text += "\n".join(missing) + "\n"
     return text
 
 
-def site_to_env(site: dict) -> dict[str, str]:
-    """Site file -> the .env variables it determines.
+def site_to_env(site: dict, connection: dict | None = None) -> dict[str, str]:
+    """Site file (and agenticops.yml, if any) -> the .env variables they determine.
 
-    Only the keys the site file speaks for. Everything else in .env.example
+    Only the keys the files speak for. Everything else in .env.example
     keeps its default, and the eight secrets are generated separately.
     """
     env: dict[str, str] = {}
@@ -562,10 +648,9 @@ def site_to_env(site: dict) -> dict[str, str]:
     for name, var in PORT_VARS.items():
         env[var] = str(as_int(overrides.get(name), f"ports.overrides.{name}", chosen[name]))
 
-    # The ai-platform overlay may name its own alert receiver; it wins over
-    # alerts.webhook_url, as every other overlay value wins over site.yml.
-    env["ALERT_WEBHOOK_URL"] = str(dig(site, "ai_platform.alert_webhook_url")
-                                   or dig(site, "alerts.webhook_url", "") or "")
+    # The stack's own alert receiver. A connected platform's is agenticops.yml's
+    # alerts.webhook (PLATFORM_ALERT_WEBHOOK_URL): the two are separate.
+    env["ALERT_WEBHOOK_URL"] = str(dig(site, "alerts.webhook_url", "") or "")
 
     profiles = ["devices", "automation"]
     if as_bool(dig(site, "ai_platform.enabled"), "ai_platform.enabled", default=True):
@@ -578,13 +663,13 @@ def site_to_env(site: dict) -> dict[str, str]:
     env["MCP_ALLOW_WRITE"] = str(
         as_bool(dig(site, "ai_platform.allow_write"), "ai_platform.allow_write")
     ).lower()
-    env.update(ai_platform_env(site, env["SYSLOG_COLLECTOR_IP"], env["GRAFANA_PORT"]))
+    env.update(ai_platform_env(site, env["SYSLOG_COLLECTOR_IP"], env["GRAFANA_PORT"], connection))
     env.update(changes_env(site))
 
     return env
 
 
-def validate_site(site: dict) -> list[str]:
+def validate_site(site: dict, connection: dict | None = None) -> list[str]:
     """Everything worth catching before a single container starts."""
     problems: list[str] = []
 
@@ -651,7 +736,7 @@ def validate_site(site: dict) -> list[str]:
         except SiteError as exc:
             problems.append(str(exc))
 
-    problems.extend(validate_ai_platform(site))
+    problems.extend(validate_ai_platform(site, connection))
 
     try:
         count = as_int(dig(site, "scale.expected_devices"), "scale.expected_devices", 50)
@@ -955,83 +1040,87 @@ def apply_sysctl(needs_fix: dict) -> None:
 def configure(args) -> None:
     head(2, "Configure")
 
+    if OLD_OVERLAY.exists():
+        bad(f"{OLD_OVERLAY.relative_to(ROOT)} is the 1.x connection file and is no longer read. Since 2.0.0 the "
+            f"connection lives in {CONNECTION.name}: issuer, jwks_url and audiences go under access:, the alert "
+            f"webhook under alerts:, publish/graphs/max_response_kb stay in site.yml's ai_platform:, and the "
+            f"change rights moved to the platform. Regenerate it with scripts/ai-platform-connect.py, then delete "
+            f"{OLD_OVERLAY.relative_to(ROOT)}. docs/how-to/connect-an-ai-platform.md")
+        return
+
     site_path = Path(args.from_site) if args.from_site else (SITE if SITE.exists() else None)
-    overlay = ai_platform_overlay_path(args)
+    connection_path = connection_file(args)
+    if connection_path is False:
+        return
     if site_path:
-        configure_from_site(site_path, args, overlay)
+        configure_from_site(site_path, args, connection_path)
         return
 
     info(f"no site file — using prompts. For a repeatable install, "
          f"cp {SITE_EXAMPLE.name} {SITE.name} and fill it in.")
     configure_interactive(args)
-    if overlay:
-        apply_ai_platform_to_env(overlay)
+    if connection_path:
+        apply_connection_to_env(connection_path)
 
 
-def ai_platform_overlay_path(args) -> Path | None:
-    explicit = getattr(args, "ai_platform", None)
+def connection_file(args) -> Path | None | bool:
+    """agenticops.yml, if any: --agenticops FILE, else ./agenticops.yml. False when a named file is missing."""
+    explicit = getattr(args, "agenticops", None)
     if explicit:
         path = Path(explicit)
         if not path.exists():
-            bad(f"{path} not found — generate it on the ai-platform host with "
-                f"scripts/ai-platform-connect.py")
-            return None
+            bad(f"{path} not found — generate it on the platform's host with scripts/ai-platform-connect.py")
+            return False
         return path
-    return AI_PLATFORM_OVERLAY if AI_PLATFORM_OVERLAY.exists() else None
+    return CONNECTION if CONNECTION.exists() else None
 
 
-def read_overlay(path: Path) -> dict | None:
+def read_connection(path: Path | None) -> dict | None:
+    """agenticops.yml, checked. {} when there is none (standalone); None when it has problems (reported)."""
+    if path is None:
+        return {}
     try:
-        overlay = read_yaml(path)
-        merge_overlay({}, overlay, path.name)       # shape check only
+        connection = read_yaml(path)
     except SiteError as exc:
         bad(str(exc))
         return None
-    return overlay
+    problems = validate_connection(connection, path.name)
+    for problem in problems:
+        bad(problem)
+    return None if problems else connection
 
 
-def apply_ai_platform_to_env(path: Path) -> None:
-    """Apply an ai-platform overlay to an existing .env — an install done
-    without a site file. Only the MCP keys (and GRAFANA_PUBLIC_URL, and
-    ALERT_WEBHOOK_URL when the overlay names one) change."""
-    overlay = read_overlay(path)
-    if overlay is None:
-        return
-    problems = validate_ai_platform(overlay)
-    if problems:
-        for problem in problems:
-            bad(f"{path.name}: {problem}")
+def apply_connection_to_env(path: Path) -> None:
+    """Apply agenticops.yml to an existing .env — an install done without a site
+    file. Only the connection's keys change, and the auth mode when it was token."""
+    connection = read_connection(path)
+    if connection is None:
         return
     current = read_env(ENV)
-    values = ai_platform_env(overlay, current.get("SYSLOG_COLLECTOR_IP", ""),
-                             current.get("GRAFANA_PORT", "3000"))
-    drop_allow_write(overlay, path.name)   # notes it; MCP_ALLOW_WRITE stays the owner's (make writes-on/off)
-    if dig(overlay, "ai_platform.alert_webhook_url") is not None:
-        values["ALERT_WEBHOOK_URL"] = str(dig(overlay, "ai_platform.alert_webhook_url") or "")
-    # Without a site file nothing else rebuilds COMPOSE_PROFILES: keep the
-    # install's own profiles and only switch `graphs` on or off.
-    values["COMPOSE_PROFILES"] = with_profile(current.get("COMPOSE_PROFILES", ""), "graphs",
-                                              values["MCP_GRAPHS_ENABLED"] == "true")
-    if dig(overlay, "ai_platform.alert_profile") is not None:   # only when the overlay names one
-        values["ALERT_PROFILE"] = alert_profile(overlay)
+    values = connection_env(connection)
+    if connection.get("access") and current.get("MCP_AUTH_MODE", "token") == "token":
+        values["MCP_AUTH_MODE"] = "oidc"
     ENV.write_text(set_env_values(ENV.read_text(), values))
     os.chmod(ENV, 0o600)
-    report_ai_platform(values, path.name)
+    report_connection({**current, **values}, path.name)
 
 
-def report_ai_platform(values: dict[str, str], source: str) -> None:
-    if values.get("MCP_BIND_IP", "127.0.0.1") == "127.0.0.1":
-        info("MCP servers: this host only (ai_platform.publish is off)")
-        return
-    ok(f"ai-platform settings applied from {source}")
-    info(f"MCP servers published on {values['MCP_BIND_IP']}:9001-9007 · "
-         f"auth {values['MCP_AUTH_MODE']}"
+def report_connection(values: dict[str, str], source: str | None) -> None:
+    where = ("this host only (ai_platform.publish is off)" if values.get("MCP_BIND_IP", "127.0.0.1") == "127.0.0.1"
+             else f"{values['MCP_BIND_IP']}:9001-9007")
+    info(f"MCP servers: {where} · auth {values.get('MCP_AUTH_MODE', 'token')}"
          + (" · graphs in chat on" if values.get("MCP_GRAPHS_ENABLED") == "true" else ""))
+    if not source:
+        info(f"no {CONNECTION.name}: standalone (no platform connected)")
+        return
+    clients = values.get("MCP_OIDC_CLIENT_SCOPES") or "none"
+    ok(f"connection applied from {source}: clients {clients}"
+       + (" · alerts to the platform" if values.get("PLATFORM_ALERT_WEBHOOK_URL") else ""))
     info("apply: make mcp-apply" + (" && make up   (starts the graph renderer)"
                                     if values.get("MCP_GRAPHS_ENABLED") == "true" else ""))
 
 
-def configure_from_site(site_path: Path, args, overlay_path: Path | None = None) -> None:
+def configure_from_site(site_path: Path, args, connection_path: Path | None = None) -> None:
     """Generate .env from the site file. Nothing else is touched."""
     if not site_path.exists():
         bad(f"{site_path} not found. Start from: cp {SITE_EXAMPLE.name} {site_path.name}")
@@ -1050,21 +1139,20 @@ def configure_from_site(site_path: Path, args, overlay_path: Path | None = None)
         bad(str(exc))
         return
     ok(f"read {site_path.name}")
-    if overlay_path:
-        overlay = read_overlay(overlay_path)
-        if overlay is None:
-            return
-        site = merge_overlay(site, overlay, overlay_path.name)
-        ok(f"merged {overlay_path.relative_to(ROOT) if overlay_path.is_relative_to(ROOT) else overlay_path}")
+    connection = read_connection(connection_path)
+    if connection is None:
+        return
+    if connection_path:
+        ok(f"read {connection_path.name}")
 
-    problems = validate_site(site)
+    problems = validate_site(site, connection)
     if problems:
         for problem in problems:
             bad(problem)
         return
     ok("site file is valid")
 
-    derived = site_to_env(site)
+    derived = site_to_env(site, connection)
 
     # Start from the shipped defaults so every variable exists, then apply the
     # site file on top, then generate the secrets.
@@ -1111,7 +1199,7 @@ def configure_from_site(site_path: Path, args, overlay_path: Path | None = None)
          f"syslog {derived['SYSLOG_PORT']}, netflow {derived['NETFLOW_PORT']}, "
          f"ipfix {derived['IPFIX_PORT']}")
 
-    report_ai_platform(derived, overlay_path.name if overlay_path else site_path.name)
+    report_connection(derived, connection_path.name if connection_path else None)
 
     leftover = [v for v in REQUIRED if re.search(rf"^{v}=CHANGEME\s*$", text, re.M)]
     if leftover:
@@ -1333,10 +1421,13 @@ def main() -> int:
     ap.add_argument("--fix-sysctl", action="store_true", help="apply kernel settings and stop (needs sudo)")
     ap.add_argument("--skip-tests", action="store_true", help="stop after initialise")
     ap.add_argument("--step", type=int, metavar="N", help="run step N only (1-7)")
-    ap.add_argument("--ai-platform", dest="ai_platform", metavar="FILE",
-                    help=f"apply an ai-platform connection file (default: "
-                         f"{AI_PLATFORM_OVERLAY.relative_to(ROOT)} if present)")
+    ap.add_argument("--agenticops", metavar="FILE",
+                    help=f"apply a connection file (default: ./{CONNECTION.name} if present; absent: standalone)")
+    ap.add_argument("--ai-platform", dest="old_ai_platform", metavar="FILE", help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.old_ai_platform:
+        ap.error(f"--ai-platform is the 1.x option: since 2.0.0 the connection is {CONNECTION.name} "
+                 f"(--agenticops FILE). docs/how-to/connect-an-ai-platform.md")
 
     print(f"{C['b']}DARQCUBE-AGENTICOPS-STACK{C['x']}")
     print(f"{C['d']}single-VM network telemetry, source of truth and automation{C['x']}")
