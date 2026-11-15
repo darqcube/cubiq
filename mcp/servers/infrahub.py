@@ -22,6 +22,9 @@ _DEVICE_FIELDS = """
   environment { value }
   status { value }
   telemetry_mode { value }
+  auto_investigate { value }
+  auto_investigate_interfaces { value }
+  auto_investigate_protocols { value }
   site { node { name { value } site_type { value } region { value } } }
   tags { edges { node { name { value } } } }
 """
@@ -49,7 +52,8 @@ def list_devices() -> dict:
     """List every network device in the source of truth.
 
     Returns each device's name, role, platform, management address, environment,
-    status, site and tags.
+    status, site and tags, and its auto_investigate data (which of its alerts
+    should start an investigation: for a connected platform to decide with).
     """
     data = _query("{ NetworkDevice { edges { node { %s } } } }" % _DEVICE_FIELDS)
     devices = _devices(data["NetworkDevice"]["edges"])
