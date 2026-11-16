@@ -1041,14 +1041,14 @@ def test_every_alert_goes_to_both_receivers_whatever_the_device_says(monkeypatch
 
 
 def test_the_config_never_holds_a_webhook_url(monkeypatch, tmp_path):
-    """A URL may carry a shared secret: Alertmanager reads each from the file config-init writes. No platform
-    connected: the platform receiver has no integration, so nothing is sent anywhere for it."""
+    """A URL may carry a shared secret: Alertmanager reads each from the file config-init writes. Nothing set up (no
+    ALERT_WEBHOOK_URL, no platform): neither receiver has an integration, so nothing is sent at all. The own receiver
+    used to post to Alertmanager's /-/ready, which answers 405: a failed delivery for every alert group."""
     mod = load_renderer(monkeypatch, THREE, tmp_path)
     mod.main()
     config = yaml.safe_load((tmp_path / "alertmanager.yml").read_text())
     files = {r["name"]: r.get("webhook_configs") for r in config["receivers"]}
-    assert files == {"notify": [{"url_file": "/etc/alertmanager/webhook-url", "send_resolved": True}],
-                     "platform": None}
+    assert files == {"notify": None, "platform": None}
 
 
 PLATFORMS_FRAGMENT = """    webhook_configs:
@@ -1064,9 +1064,13 @@ def test_a_render_keeps_the_platforms_webhooks(monkeypatch, tmp_path):
     """config-init writes the connected platforms' webhooks to alertmanager-platforms.yml; a render (auto-render runs
     on every change) must insert them exactly as config-init does, or alerts would stop reaching the platforms."""
     (tmp_path / "alertmanager-platforms.yml").write_text(PLATFORMS_FRAGMENT)
+    (tmp_path / "alertmanager-notify.yml").write_text(
+        "    webhook_configs:\n      - url_file: /etc/alertmanager/webhook-url\n        send_resolved: true\n")
     mod = load_renderer(monkeypatch, THREE, tmp_path)
     mod.main()
     config = yaml.safe_load((tmp_path / "alertmanager.yml").read_text())
+    notify = next(r for r in config["receivers"] if r["name"] == "notify")
+    assert notify["webhook_configs"] == [{"url_file": "/etc/alertmanager/webhook-url", "send_resolved": True}]
     platform = next(r for r in config["receivers"] if r["name"] == "platform")
     assert platform["webhook_configs"] == [{"url_file": "/etc/alertmanager/platform-lab-url", "send_resolved": True,
                                             "http_config": {"authorization": {
@@ -1093,8 +1097,7 @@ def run_config_init(tmp_path, env: dict):
             "-v", f"{out}:/out", "-v", f"{generated}:/generated"]
     for key, value in env.items():
         args += ["-e", f"{key}={value}"]
-    script = config_init_script().replace("${ALERT_WEBHOOK_URL:-}", env.get("ALERT_WEBHOOK_URL", ""))
-    done = subprocess.run(args + [image, "sh", "-c", script], capture_output=True, text=True, timeout=180)
+    done = subprocess.run(args + [image, "sh", "-c", config_init_script()], capture_output=True, text=True, timeout=180)
     assert done.returncode == 0, done.stdout + done.stderr
     return out, generated, done.stdout
 
@@ -1129,6 +1132,21 @@ def test_config_init_with_no_platform_sends_nothing_and_clears_old_files(tmp_pat
     platform = next(r for r in yaml.safe_load((generated / "alertmanager.yml").read_text())["receivers"]
                     if r["name"] == "platform")
     assert "webhook_configs" not in platform and "standalone" in log
+
+
+def test_cubiqs_own_receiver_sends_only_when_its_url_is_set(tmp_path):
+    """Empty: no webhook (a POST to /-/ready got 405, logged as a failure for every alert group). Set: one webhook,
+    the URL in a file, never in the config or the script."""
+    out, generated, log = run_config_init(tmp_path, {})
+    notify = next(r for r in yaml.safe_load((generated / "alertmanager.yml").read_text())["receivers"]
+                  if r["name"] == "notify")
+    assert "webhook_configs" not in notify and not (out / "webhook-url").exists()
+    url = "http://192.0.2.50/hook/s3cret-path"
+    out, generated, log = run_config_init(tmp_path, {"ALERT_WEBHOOK_URL": url})
+    text = (generated / "alertmanager.yml").read_text()
+    notify = next(r for r in yaml.safe_load(text)["receivers"] if r["name"] == "notify")
+    assert notify["webhook_configs"] == [{"url_file": "/etc/alertmanager/webhook-url", "send_resolved": True}]
+    assert (out / "webhook-url").read_text() == url and url not in text and url not in log
 
 
 def test_config_init_drops_a_platform_name_that_is_not_a_label(tmp_path):
@@ -1167,10 +1185,12 @@ def test_config_init_writes_the_url_files_and_the_config_every_start():
     """Nothing in Alertmanager's config is per install, so config-init writes it on every start: an upgrade's routing
     takes effect at the next make up, without a render."""
     compose = (ROOT / "compose/observability.yaml").read_text()
-    assert "printf '%s' \"$$url\" > /out/webhook-url" in compose
+    assert "printf '%s' \"$$ALERT_WEBHOOK_URL\" > /out/webhook-url" in compose
+    assert "${ALERT_WEBHOOK_URL" not in config_init_script(), "the URL is read at run time, never pasted by compose"
     assert "PLATFORM_ALERT_WEBHOOKS: ${PLATFORM_ALERT_WEBHOOKS:-}" in compose
     assert "PLATFORM_ALERT_TOKENS: ${PLATFORM_ALERT_TOKENS:-}" in compose
-    assert "sed '/# PLATFORM_WEBHOOKS/r /generated/alertmanager-platforms.yml' /src/alertmanager.yml.tmpl" in compose
+    assert "-e '/# NOTIFY_WEBHOOK/r /generated/alertmanager-notify.yml'" in compose
+    assert "-e '/# PLATFORM_WEBHOOKS/r /generated/alertmanager-platforms.yml' /src/alertmanager.yml.tmpl" in compose
     assert "${PLATFORM_ALERT_TOKENS" not in config_init_script().replace("$PLATFORM_ALERT_TOKENS", ""), \
         "tokens are read from the environment at run time, never pasted into the script by compose"
     assert "if [ ! -e /generated/alertmanager.yml ]" not in compose

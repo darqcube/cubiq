@@ -40,18 +40,22 @@ services:
       - sh
       - -c
       - |
-        # Each URL in a file (url_file): the Alertmanager config never holds one (it may carry a shared secret).
-        # An empty one points at Alertmanager's own health endpoint, so delivery succeeds and does nothing, rather
-        # than filling the log with failures for an integration that was never set up.
-        url="${ALERT_WEBHOOK_URL:-}"
-        if [ -z "$$url" ]; then
-          url="http://alertmanager:9093/-/ready"
+        # Each URL in a file (url_file): the Alertmanager config never holds one (it may carry a shared secret), and
+        # it is read from this container's environment, never pasted into this script. Cubiq's own receiver
+        # (notify): its entry in generated/alertmanager-notify.yml, which make render inserts too. Empty: no
+        # integration at all, so nothing is sent (it used to post to Alertmanager's /-/ready, which answers 405: a
+        # failed delivery logged for every alert group).
+        rm -f /out/webhook-url
+        if [ -z "$$ALERT_WEBHOOK_URL" ]; then
           echo "ALERT_WEBHOOK_URL is empty — the stack's own receiver delivers nowhere (Alertmanager UI only)."
+          : > /generated/alertmanager-notify.yml
         else
-          echo "Alerts will be delivered to $$url"
+          printf '%s' "$$ALERT_WEBHOOK_URL" > /out/webhook-url
+          chmod 0644 /out/webhook-url
+          printf '    webhook_configs:\n      - url_file: /etc/alertmanager/webhook-url\n        send_resolved: true\n' > /generated/alertmanager-notify.yml
+          echo "Alerts will be delivered to the stack's own receiver (ALERT_WEBHOOK_URL)"
         fi
-        printf '%s' "$$url" > /out/webhook-url
-        chmod 0644 /out/webhook-url
+        chmod 0644 /generated/alertmanager-notify.yml
         # One webhook per connected platform (agenticops.yml platforms.<name>.alert_webhook) under the platform
         # receiver: its URL and token each in a file of their own here (read from this container's environment,
         # never pasted into this script), and the receiver's entries, which only name those files, in
@@ -86,7 +90,8 @@ services:
         chmod 0644 /generated/alertmanager-platforms.yml
         # The config itself: the template, on every start, so an upgrade's new routing takes effect at the next
         # `make up` without a render.
-        sed '/# PLATFORM_WEBHOOKS/r /generated/alertmanager-platforms.yml' /src/alertmanager.yml.tmpl > /generated/alertmanager.yml
+        sed -e '/# NOTIFY_WEBHOOK/r /generated/alertmanager-notify.yml' \
+            -e '/# PLATFORM_WEBHOOKS/r /generated/alertmanager-platforms.yml' /src/alertmanager.yml.tmpl > /generated/alertmanager.yml
         chmod 0644 /generated/alertmanager.yml
 
         for f in devices.json devices.yml; do

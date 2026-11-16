@@ -100,5 +100,5 @@ docker compose logs config-init          # says where alerts will be delivered
 | Symptom | Cause |
 |---|---|
 | Will not start, config parse error | a `${VAR}` left in the template — it is not expanded |
-| Alerts fire but arrive nowhere | `ALERT_WEBHOOK_URL` empty; the default is a local no-op |
+| Alerts fire but arrive nowhere | `ALERT_WEBHOOK_URL` empty (and no platform connected): the receiver then has no webhook at all, by design; set it and `docker compose up -d --force-recreate config-init alertmanager` |
 | Changed the URL, no effect | recreate `config-init`, not just `alertmanager` |

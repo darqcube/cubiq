@@ -46,7 +46,9 @@ windows, four eyes, management interfaces and alert routing are the connected pl
   (one webhook per connected platform, `PLATFORM_ALERT_WEBHOOKS`, from `agenticops.yml`), each sending that
   platform's token as `Authorization: Bearer` (`PLATFORM_ALERT_TOKENS`, set with `install.py --platform-token NAME` from
   standard input: never in YAML, never printed); with no platform connected the receiver has no webhook and sends
-  nothing. The `investigate` receiver and the routes built from `auto_investigate` are gone. The three `auto_investigate` attributes stay in Infrahub as data a platform reads.
+  nothing. The same for Cubiq's own receiver with `ALERT_WEBHOOK_URL` empty: no webhook (it used to post to
+  Alertmanager's `/-/ready`, which answers 405, so every alert group logged a failed delivery), and the URL is read
+  from config-init's environment, no longer pasted into its command. The `investigate` receiver and the routes built from `auto_investigate` are gone. The three `auto_investigate` attributes stay in Infrahub as data a platform reads.
   config-init writes Alertmanager's config from its template on every start.
 - **`docs/how-to/approve-changes.md` is `run-changes.md`.**
 

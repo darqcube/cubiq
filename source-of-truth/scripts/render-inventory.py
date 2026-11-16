@@ -142,20 +142,21 @@ def _readable(path: str) -> None:
     os.chmod(path, 0o644)
 
 
-PLATFORM_MARKER = "# PLATFORM_WEBHOOKS"
+# Each receiver's webhooks, written by config-init (they only name the URL and token files it writes): inserted
+# after the marker line, exactly as config-init does, so a render never drops them. Empty: no integration.
+RECEIVER_FRAGMENTS = {"# NOTIFY_WEBHOOK": "alertmanager-notify.yml", "# PLATFORM_WEBHOOKS": "alertmanager-platforms.yml"}
 
 
-def render_alertmanager(template: str, platforms: str = "") -> str:
-    """The template, marked as generated, with the connected platforms' webhooks (config-init writes them to
-    alertmanager-platforms.yml from agenticops.yml; empty when none) inserted after the marker line, exactly as
-    config-init does: a render must never drop them."""
-    if not platforms.strip():
-        return HEADER + template
+def render_alertmanager(template: str, fragments: dict[str, str] | None = None) -> str:
+    """The template, marked as generated, with each receiver's webhooks (`fragments`: marker -> its text) inserted
+    after its marker line."""
+    fragments = {m: t for m, t in (fragments or {}).items() if t.strip()}
     out = []
     for line in template.splitlines(keepends=True):
         out.append(line)
-        if PLATFORM_MARKER in line:
-            out.append(platforms if platforms.endswith("\n") else platforms + "\n")
+        for marker, text in fragments.items():
+            if marker in line:
+                out.append(text if text.endswith("\n") else text + "\n")
     return HEADER + "".join(out)
 
 
@@ -647,10 +648,12 @@ def main() -> int:
         with open(ALERTMANAGER_TEMPLATE) as fh:
             template = fh.read()
         path = os.path.join(OUT_DIR, "alertmanager.yml")
-        fragment = os.path.join(OUT_DIR, "alertmanager-platforms.yml")
-        platforms = open(fragment).read() if os.path.exists(fragment) else ""
+        fragments = {}
+        for marker, name in RECEIVER_FRAGMENTS.items():
+            fragment = os.path.join(OUT_DIR, name)
+            fragments[marker] = open(fragment).read() if os.path.exists(fragment) else ""
         with open(path, "w") as fh:
-            fh.write(render_alertmanager(template, platforms))
+            fh.write(render_alertmanager(template, fragments))
         _readable(path)
         written.append("alertmanager.yml")
         problem = reload_alertmanager()

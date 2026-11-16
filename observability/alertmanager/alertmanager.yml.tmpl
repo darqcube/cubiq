@@ -10,8 +10,8 @@
 #             that platform's token as a Bearer header (install.py --platform-token NAME)
 # Which alerts start an investigation, or reach which people, is each platform's policy. Each delivery names its
 # receiver in the body ("receiver"). URLs and tokens are read from files config-init writes (url_file,
-# credentials_file), so neither this template nor the generated config holds them. The stack's own receiver, when
-# empty, points at a local no-op; with no platform connected the platform receiver has no integration at all.
+# credentials_file), so neither this template nor the generated config holds them. A receiver with nothing set up
+# (ALERT_WEBHOOK_URL empty, no platform connected) has no integration at all: Alertmanager sends nothing for it.
 route:
   receiver: notify
   group_by: [alertname, device]
@@ -29,9 +29,7 @@ route:
 
 receivers:
   - name: notify
-    webhook_configs:
-      - url_file: /etc/alertmanager/webhook-url
-        send_resolved: true
+    # NOTIFY_WEBHOOK: config-init and make render insert generated/alertmanager-notify.yml below this line.
   - name: platform
     # PLATFORM_WEBHOOKS: config-init and make render insert generated/alertmanager-platforms.yml below this line.
 
