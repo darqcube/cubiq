@@ -532,6 +532,31 @@ def test_a_moved_key_names_where_it_went(inst, site, key, value, where):
     assert not any("unknown key" in p for p in problems), "a moved key must be explained, not called unknown"
 
 
+def test_a_rerun_of_step_2_keeps_the_platforms_alert_tokens(inst, tmp_path, monkeypatch):
+    """The tokens are set after the install (install.py --platform-token); a later step 2 regenerates .env from the
+    example and must keep them, or every platform's alerts would stop without a word."""
+    import shutil
+    env, conn = tmp_path / ".env", tmp_path / "agenticops.yml"
+    site_file = tmp_path / "site.yml"
+    shutil.copy(ROOT / ".site-test.yml" if (ROOT / ".site-test.yml").exists() else EXAMPLE, site_file)
+    site_file.write_text(site_file.read_text().replace("ssh_password: CHANGEME", "ssh_password: pw")
+                         .replace("auth: CHANGEME", "auth: authpw").replace("priv: CHANGEME", "priv: privpw"))
+    site_file.chmod(0o600)
+    conn.write_text("platforms:\n  lab:\n    issuer: http://idp.example/realms/demo\n"
+                    "    jwks_url: http://192.0.2.1:7080/realms/demo/certs\n"
+                    "    alert_webhook: http://192.0.2.1:9100/alertmanager\n")
+    token = "k" * 24
+    env.write_text(f"PLATFORM_ALERT_TOKENS=lab={token}\nMCP_AUTH_TOKEN=keepme\n")
+    monkeypatch.setattr(inst, "ENV", env)
+    monkeypatch.setattr(inst, "check_site_is_not_committed", lambda: None)
+    monkeypatch.setattr(inst, "local_addresses", lambda: {"10.20.0.50", "127.0.0.1"})
+    inst.configure_from_site(site_file, type("Args", (), {})(), conn)
+    values = inst.read_env(env)
+    assert values["PLATFORM_ALERT_TOKENS"] == f"lab={token}"
+    assert values["PLATFORM_ALERT_WEBHOOKS"] == "lab=http://192.0.2.1:9100/alertmanager"
+    assert values["MCP_AUTH_TOKEN"] == "keepme"
+
+
 def test_the_1x_connection_file_stops_the_install(inst, tmp_path, monkeypatch, capsys):
     old = tmp_path / "sites" / "ai-platform.yml"
     old.parent.mkdir()

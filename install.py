@@ -68,6 +68,10 @@ GENERATED = [
     "GRAFANA_ADMIN_PASSWORD", "RENDER_HOOK_SECRET",
 ]
 
+# Secrets the operator sets after the install, which no file speaks for: a regenerated .env keeps them. Without this,
+# every `install.py --step 2` emptied each platform's alert token and alerts to every platform stopped, silently.
+OPERATOR_SECRETS = ["PLATFORM_ALERT_TOKENS"]
+
 # Values only the operator can know.
 REQUIRED = {
     "DEVICE_USER": "SSH username for your network devices",
@@ -1246,7 +1250,7 @@ def configure_from_site(site_path: Path, args, connection_path: Path | None = No
     for var in GENERATED:
         text = re.sub(rf"^{var}=CHANGEME\s*$", f"{var}={secrets.token_hex(24)}", text, flags=re.M)
 
-    existing = read_env()
+    existing = read_env(ENV)
     if ENV.exists():
         # Keep the secrets already in use — regenerating them would orphan the
         # data in Neo4j and Postgres.
@@ -1257,6 +1261,9 @@ def configure_from_site(site_path: Path, args, connection_path: Path | None = No
                 kept += 1
         if kept:
             info(f"kept {kept} existing secrets — regenerating them would orphan stored data")
+        for var in OPERATOR_SECRETS:
+            if existing.get(var):
+                text = re.sub(rf"^{var}=.*$", lambda _m, v=var: f"{v}={existing[v]}", text, flags=re.M)
 
     ENV.write_text(text)
     os.chmod(ENV, 0o600)
@@ -1269,7 +1276,8 @@ def configure_from_site(site_path: Path, args, connection_path: Path | None = No
          f"syslog {derived['SYSLOG_PORT']}, netflow {derived['NETFLOW_PORT']}, "
          f"ipfix {derived['IPFIX_PORT']}")
 
-    report_connection(derived, connection_path.name if connection_path else None)
+    report_connection({**derived, **{v: existing[v] for v in OPERATOR_SECRETS if existing.get(v)}},
+                      connection_path.name if connection_path else None)
 
     leftover = [v for v in REQUIRED if re.search(rf"^{v}=CHANGEME\s*$", text, re.M)]
     if leftover:
