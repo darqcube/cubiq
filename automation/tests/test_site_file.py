@@ -475,9 +475,10 @@ def test_a_webhook_token_is_set_from_stdin_and_never_shown(inst, tmp_path, monke
     assert inst.platform_tokens(inst.read_env(env)["PLATFORM_ALERT_TOKENS"]) == {"lab": secret, "staging": "t" * 20}
     assert secret not in capsys.readouterr().out, "a token is never printed"
     assert oct(env.stat().st_mode & 0o777) == "0o600"
-    monkeypatch.setattr("sys.stdin", io.StringIO("\n"))
-    assert inst.set_platform_token("lab") == 0
-    assert inst.platform_tokens(inst.read_env(env)["PLATFORM_ALERT_TOKENS"]) == {"staging": "t" * 20}, "empty removes"
+    before = env.read_text()
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert inst.set_platform_token("lab") == 2, "a sending side that failed sends nothing"
+    assert env.read_text() == before, "and a working token is not removed"
 
 
 def test_a_webhook_token_with_a_comma_or_a_bad_name_is_refused(inst, tmp_path, monkeypatch):

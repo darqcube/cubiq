@@ -1139,28 +1139,30 @@ def platform_tokens(raw: str) -> dict[str, str]:
 
 def set_platform_token(name: str) -> int:
     """install.py --platform-token NAME: the token a platform's alert webhook expects (Authorization: Bearer), read on
-    standard input (a pipe, or typed with no echo), kept in .env (0600) and nowhere else. Empty input removes it. A secret
-    never goes in agenticops.yml: the platform's side sends it over SSH's stdin, so it is never in a file or a shell
-    history there either."""
+    standard input (a pipe, or typed with no echo), kept in .env (0600) and nowhere else. A secret never goes in
+    agenticops.yml: the platform's side sends it over SSH's stdin, so it is never in a file or a shell history there
+    either. Empty input changes nothing and fails: a sending side that failed must not remove a working token. A
+    platform removed from agenticops.yml gets no webhook, so its token is simply unused."""
     if not PLATFORM_NAME.fullmatch(name):
         bad(f"--platform-token {name!r}: a platform's name, as in agenticops.yml platforms:")
         return 2
     if not ENV.exists():
         bad(f"no {ENV.name} yet — run python3 install.py first")
         return 2
-    token = (getpass.getpass(f"Alert webhook token for {name} (empty removes it): ") if sys.stdin.isatty()
+    token = (getpass.getpass(f"Alert webhook token for {name}: ") if sys.stdin.isatty()
              else sys.stdin.readline()).strip()
-    if token and not WEBHOOK_TOKEN.fullmatch(token):
+    if not token:
+        bad(f"no token for {name} on standard input: nothing changed")
+        return 2
+    if not WEBHOOK_TOKEN.fullmatch(token):
         bad("the token must be 16 to 512 characters of letters, digits and ._~+/=- (no comma, no space)")
         return 2
     tokens = platform_tokens(read_env(ENV).get("PLATFORM_ALERT_TOKENS", ""))
-    tokens.pop(name, None)
-    if token:
-        tokens[name] = token
+    tokens[name] = token
     ENV.write_text(set_env_values(ENV.read_text(), {"PLATFORM_ALERT_TOKENS": ",".join(
         f"{k}={v}" for k, v in sorted(tokens.items()))}))
     os.chmod(ENV, 0o600)
-    ok(f"{name}'s alert webhook token {'saved' if token else 'removed'} in {ENV.name} (not shown) — "
+    ok(f"{name}'s alert webhook token saved in {ENV.name} (not shown) — "
        f"apply: docker compose up -d --force-recreate config-init alertmanager")
     return 0
 

@@ -324,7 +324,7 @@ class Verifier:
                 leeway=30,
             )
         except jwt.PyJWKClientError as exc:
-            raise AuthError(f"cannot fetch {platform.name}'s signing keys: {exc}") from exc
+            raise AuthError(f"{platform.name}'s signing keys (unreachable, or none signed this token): {exc}") from exc
         except jwt.InvalidTokenError as exc:
             raise AuthError(f"invalid token: {exc}") from exc
 
