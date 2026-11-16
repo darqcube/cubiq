@@ -46,6 +46,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
+CUBIQ_VERSION = os.environ.get("CUBIQ_VERSION", "").strip() or "unknown"
 AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
 EXECUTE_TOKEN = os.environ.get("MCP_EXECUTE_TOKEN", "")
 AUTH_MODE = (os.environ.get("MCP_AUTH_MODE") or "token").strip().lower()
@@ -321,7 +322,7 @@ class _Auth:
         self.public_prefixes = public_prefixes
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["path"] == "/healthz":
+        if scope["type"] != "http" or scope["path"] in ("/healthz", "/version"):
             return await self.app(scope, receive, send)
         if self.public_prefixes and scope["path"].startswith(self.public_prefixes):
             return await self.app(scope, receive, send)
@@ -454,6 +455,11 @@ def serve(mcp: FastMCP, port: int, public_routes: list[Route] | tuple = ()) -> N
     app = mcp.streamable_http_app()
     app.router.routes.append(
         Route("/healthz", lambda r: PlainTextResponse("ok"), methods=["GET"])
+    )
+    # Which Cubiq this is (install.py writes CUBIQ_VERSION from the checkout's tag), so a connected platform can check
+    # it needs no newer one. Public like /healthz: a version, never a secret.
+    app.router.routes.append(
+        Route("/version", lambda r: JSONResponse({"name": "cubiq", "version": CUBIQ_VERSION}), methods=["GET"])
     )
     app.router.routes.extend(public_routes)
     prefixes = tuple(r.path.split("{", 1)[0] for r in public_routes)

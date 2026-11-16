@@ -590,6 +590,17 @@ def set_env_values(text: str, values: dict[str, str]) -> str:
     return text
 
 
+def cubiq_version() -> str:
+    """This checkout's version: its tag (v2.0.0), or the tag plus commits since (v2.0.0-3-gabc1234); "unknown" without
+    git. The MCP servers report it at /version, so a connected platform can check it needs no newer Cubiq."""
+    try:
+        out = subprocess.run(["git", "describe", "--tags", "--always"], cwd=ROOT, capture_output=True, text=True,
+                             timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else "unknown"
+
+
 def site_to_env(site: dict, connection: dict | None = None) -> dict[str, str]:
     """Site file (and agenticops.yml, if any) -> the .env variables they determine.
 
@@ -598,6 +609,7 @@ def site_to_env(site: dict, connection: dict | None = None) -> dict[str, str]:
     """
     env: dict[str, str] = {}
 
+    env["CUBIQ_VERSION"] = cubiq_version()
     env["DEPLOYMENT_NAME"] = str(dig(site, "site.name", "darqcube"))
     env["ALERT_PROFILE"] = alert_profile(site)
     env["SYSLOG_COLLECTOR_IP"] = str(dig(site, "site.collector_ip", ""))
@@ -1070,7 +1082,7 @@ def apply_connection_to_env(path: Path) -> None:
     if connection is None:
         return
     current = read_env(ENV)
-    values = connection_env(connection)
+    values = {**connection_env(connection), "CUBIQ_VERSION": cubiq_version()}
     if connection.get("access") and current.get("MCP_AUTH_MODE", "token") == "token":
         values["MCP_AUTH_MODE"] = "oidc"
     ENV.write_text(set_env_values(ENV.read_text(), values))

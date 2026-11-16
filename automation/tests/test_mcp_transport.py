@@ -33,7 +33,7 @@ pytestmark = pytest.mark.skipif(shutil.which("docker") is None, reason="docker n
 EXPECTED = [
     "host_compose_name_accepted", "host_published_address_accepted", "host_loopback_accepted", "host_unknown_refused",
     "token_missing_401", "token_wrong_401", "token_right_200", "token_jwt_refused_in_token_mode",
-    "healthz_needs_no_auth", "read_token_is_refused_by_an_execute_tool", "execute_token_passes_the_scope_gate",
+    "healthz_needs_no_auth", "version_needs_no_auth_and_names_cubiq", "read_token_is_refused_by_an_execute_tool", "execute_token_passes_the_scope_gate",
     "oidc_valid_200", "oidc_shared_token_refused", "oidc_wrong_issuer_401", "oidc_wrong_audience_401",
     "oidc_expired_401", "oidc_roles_count_for_nothing_only_the_client_scope",
     "oidc_read_client_is_refused_by_an_execute_tool", "oidc_execute_client_passes_the_scope_gate",

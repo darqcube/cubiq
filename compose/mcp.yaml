@@ -26,6 +26,8 @@ x-mcp: &mcp
   restart: unless-stopped
 
 x-mcp-env: &mcp-env
+  # This Cubiq's version (install.py, from the checkout's tag), reported at /version.
+  CUBIQ_VERSION: ${CUBIQ_VERSION:-unknown}
   # The read token, and the execute token (stage, commit, rollback): two secrets.
   MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:?set in .env}
   MCP_EXECUTE_TOKEN: ${MCP_EXECUTE_TOKEN:-}

@@ -125,6 +125,8 @@ def token_checks():
     check("token_jwt_refused_in_token_mode",
           lambda: (initialize(c, f"Bearer {token('platform-control')}").status_code == 401, ""))
     check("healthz_needs_no_auth", lambda: (c.get("/healthz").status_code in (200, 404), ""))
+    check("version_needs_no_auth_and_names_cubiq",
+          lambda: (c.get("/version").status_code in (200, 404), c.get("/version").text[:80]))
     # The read token reads, and is refused by an execute tool; the execute token gets past the gate.
     read = call_push(c, "Bearer test-token")
     check("read_token_is_refused_by_an_execute_tool", lambda: ("needs execute" in read, read))

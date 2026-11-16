@@ -573,3 +573,10 @@ def test_alert_profile_comes_from_the_site(inst, site):
 def test_an_unknown_alert_profile_is_refused(inst, site):
     site.setdefault("alerts", {})["profile"] = "fast"
     assert any("alert profile 'fast'" in p for p in inst.validate_ai_platform(site))
+
+
+def test_the_version_comes_from_the_checkout(inst, site):
+    """The MCP servers report it at /version, for a connected platform's minimum-version check."""
+    version = inst.site_to_env(site)["CUBIQ_VERSION"]
+    assert version.startswith("v") or version == "unknown"
+    assert inst.cubiq_version() == version
