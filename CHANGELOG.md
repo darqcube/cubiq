@@ -59,6 +59,14 @@ windows, four eyes, management interfaces and alert routing are the connected pl
   names where each 1.x option went.
 - `docs/how-to/connect-an-ai-platform.md` is the guide for connecting AgenticOps directly, without Octelium.
 
+### Fixes
+- **No duplicate series when a device's name request times out.** Every SNMP table (interfaces, BGP, OSPF, IP SLA,
+  LLDP, addresses) inherited the `hostname` tag (sysName); when that one request timed out while the tables came
+  through, their rows arrived without it, a second series that kept its last value: a recovered link stayed "down"
+  in the copy and kept `InterfaceDown` re-arming. Tables are identified by the device and their own index tags now;
+  `hostname` stays on `device_uptime` (the LLDP neighbour match reads it). After upgrading, the table series start
+  anew without `hostname` (the old ones age out in 5 minutes); queries never used it.
+
 ### Unchanged on purpose
 - The name "Cubiq" is prose only: the compose project (`darqcube`), images, labels, volumes, metrics, env-var and tool
   names stay, so an upgrade keeps every container and its data. Grafana's folder is now shown as **Cubiq** (same

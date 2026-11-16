@@ -303,7 +303,6 @@ def resource_tables(platform: str, spec: dict) -> str:
         '  [[inputs.snmp.table]]',
         '    name = "cpu"',
         '    index_as_tag = true',
-        '    inherit_tags = ["hostname"]',
         '',
         '    [[inputs.snmp.table.field]]',
         '      name = "usage"',
@@ -312,7 +311,6 @@ def resource_tables(platform: str, spec: dict) -> str:
         '  [[inputs.snmp.table]]',
         '    name = "memory"',
         '    index_as_tag = true',
-        '    inherit_tags = ["hostname"]',
     ]
     mem = spec["memory"]
     for key in ("used", "free", "total"):
@@ -329,7 +327,7 @@ def resource_tables(platform: str, spec: dict) -> str:
         # local_addr (the session's own address) places the session on an
         # interface — the network map draws tunnel links from it.
         # state 6 = established; admin_status 2 = start (configured up).
-        lines += ['', '  [[inputs.snmp.table]]', '    name = "bgp_peer"', '    inherit_tags = ["hostname"]']
+        lines += ['', '  [[inputs.snmp.table]]', '    name = "bgp_peer"']
         for name, oid, tag in (("peer", "1.3.6.1.2.1.15.3.1.7", True), ("state", "1.3.6.1.2.1.15.3.1.2", False),
                                ("admin_status", "1.3.6.1.2.1.15.3.1.3", False), ("remote_as", "1.3.6.1.2.1.15.3.1.9", False),
                                ("established_seconds", "1.3.6.1.2.1.15.3.1.16", False),
@@ -341,7 +339,7 @@ def resource_tables(platform: str, spec: dict) -> str:
         # OSPF-MIB ospfNbrTable (RFC 1850, standard): one series per adjacency. neighbor is the neighbour's interface
         # address, router_id its OSPF router id. state: 1 down .. 4 twoWay .. 8 full. A dead adjacency is removed
         # from the table, so the rules also treat a neighbour seen in the last hour and gone now as down.
-        lines += ['', '  [[inputs.snmp.table]]', '    name = "ospf_neighbor"', '    inherit_tags = ["hostname"]']
+        lines += ['', '  [[inputs.snmp.table]]', '    name = "ospf_neighbor"']
         for name, oid, tag in (("neighbor", "1.3.6.1.2.1.14.10.1.1", True), ("router_id", "1.3.6.1.2.1.14.10.1.3", True),
                                ("state", "1.3.6.1.2.1.14.10.1.6", False)):
             lines += ['', '    [[inputs.snmp.table.field]]', f'      name = "{name}"', f'      oid = "{oid}"']
@@ -352,7 +350,7 @@ def resource_tables(platform: str, spec: dict) -> str:
         # device runs. index = operation id (always unique); tag = the probe's
         # name from `tag` in its config — label probes by it in dashboards.
         # rtt_type 1 = icmp-echo, 6 = tcp-connect; sense 1 = ok.
-        lines += ['', '  [[inputs.snmp.table]]', '    name = "ipsla"', '    index_as_tag = true', '    inherit_tags = ["hostname"]']
+        lines += ['', '  [[inputs.snmp.table]]', '    name = "ipsla"', '    index_as_tag = true']
         for name, oid, tag in (("probe", "1.3.6.1.4.1.9.9.42.1.2.1.1.3", True),
                                ("rtt_type", "1.3.6.1.4.1.9.9.42.1.2.1.1.4", True),
                                ("rtt_ms", "1.3.6.1.4.1.9.9.42.1.2.10.1.1", False),
@@ -370,8 +368,7 @@ def resource_tables(platform: str, spec: dict) -> str:
         # neighbour's sysName, matched to the `hostname` label of the device
         # that reports it. `seen` (lldpRemChassisIdSubtype) is only there
         # because a series needs a numeric field: its existence is the link.
-        lines += ['', '  [[inputs.snmp.table]]', '    name = "neighbor"', '    index_as_tag = true',
-                  '    inherit_tags = ["hostname"]']
+        lines += ['', '  [[inputs.snmp.table]]', '    name = "neighbor"', '    index_as_tag = true']
         for name, oid, tag in (("neighbor_name", "1.0.8802.1.1.2.1.4.1.1.9", True),
                                ("neighbor_port", "1.0.8802.1.1.2.1.4.1.1.7", True),
                                ("seen", "1.0.8802.1.1.2.1.4.1.1.4", False)):
@@ -379,7 +376,6 @@ def resource_tables(platform: str, spec: dict) -> str:
             if tag:
                 lines.append('      is_tag = true')
         lines += ['', '  [[inputs.snmp.table]]', '    name = "lldp_port"', '    index_as_tag = true',
-                  '    inherit_tags = ["hostname"]',
                   '', '    [[inputs.snmp.table.field]]', '      name = "ifName"',
                   '      oid = "1.0.8802.1.1.2.1.3.7.1.3"', '      is_tag = true',
                   '', '    [[inputs.snmp.table.field]]', '      name = "id_subtype"',
@@ -389,13 +385,11 @@ def resource_tables(platform: str, spec: dict) -> str:
         # address resolve to interfaces through ipAddrTable (IP -> ifIndex)
         # and ifIndex -> ifName.
         lines += ['', '  [[inputs.snmp.table]]', '    name = "ip_address"', '    index_as_tag = true',
-                  '    inherit_tags = ["hostname"]',
                   '', '    [[inputs.snmp.table.field]]', '      name = "ifindex"',
                   '      oid = "1.3.6.1.2.1.4.20.1.2"', '      is_tag = true',
                   '', '    [[inputs.snmp.table.field]]', '      name = "seen"',
                   '      oid = "1.3.6.1.2.1.4.20.1.4"',
                   '', '  [[inputs.snmp.table]]', '    name = "if_index"', '    index_as_tag = true',
-                  '    inherit_tags = ["hostname"]',
                   '', '    [[inputs.snmp.table.field]]', '      name = "ifName"',
                   '      oid = "1.3.6.1.2.1.31.1.1.1.1"', '      is_tag = true',
                   '', '    [[inputs.snmp.table.field]]', '      name = "value"',

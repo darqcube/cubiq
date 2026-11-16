@@ -1027,6 +1027,20 @@ INVESTIGATE = [
 ]
 
 
+def test_no_snmp_table_takes_the_hostname_tag(monkeypatch, tmp_path):
+    """A table that inherits `hostname` (sysName) gets a second series whenever that one request times out alone: on
+    2026-11-16 a recovered link stayed "down" in the copy and kept InterfaceDown re-arming. Tables are identified by
+    the device and their own index tags; `hostname` stays on device_uptime, which the LLDP neighbour match reads."""
+    mod = load_renderer(monkeypatch, THREE, tmp_path)
+    assert mod.main() == 0
+    rendered = [f for f in tmp_path.iterdir() if f.suffix == ".conf"]
+    assert rendered, "nothing rendered"
+    for f in rendered + sorted((ROOT / "observability/telegraf/profiles").glob("*.tmpl")):
+        assert 'inherit_tags = ["hostname"]' not in f.read_text(), f.name
+    profile = (ROOT / "observability/telegraf/profiles/_interfaces.conf.tmpl").read_text()
+    assert 'name = "hostname"' in profile and "is_tag = true" in profile, "device_uptime keeps hostname"
+
+
 def test_every_alert_goes_to_both_receivers_whatever_the_device_says(monkeypatch, tmp_path):
     """Which alert matters to whom is the platform's policy since 2.0.0: auto_investigate stays in Infrahub as data,
     and routes nothing here."""

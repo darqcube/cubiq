@@ -48,9 +48,13 @@ __SECURITY__
     name = "uptime"
     oid = "1.3.6.1.2.1.1.3.0"
 
+  # No table inherits `hostname` (sysName): a series' identity is device and its
+  # own index tags only. When the sysName request timed out alone, the rows came
+  # without it, a second series of the same interface that kept its last value
+  # (a recovered link still "down", InterfaceDown re-arming: 2026-11-16).
+  # `hostname` stays on device_uptime, where the LLDP neighbour match reads it.
   [[inputs.snmp.table]]
     name = "interface"
-    inherit_tags = ["hostname"]
 
     [[inputs.snmp.table.field]]
       name = "ifName"
