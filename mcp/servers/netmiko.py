@@ -75,7 +75,7 @@ def get_device_state(device: str) -> dict:
 # --- changes ---------------------------------------------------------------
 
 def _actor(who: dict) -> dict:
-    return {k: who.get(k) for k in ("user", "sub", "via", "agent")}
+    return {k: who.get(k) for k in ("user", "sub", "via", "platform", "agent")}
 
 
 def _iso(epoch: float | None) -> str | None:
@@ -85,7 +85,7 @@ def _iso(epoch: float | None) -> str | None:
 def _summary(change: dict) -> dict:
     """What a model or a person needs from a change — never the archived config."""
     keys = ("id", "device", "state", "lines", "rollback", "fingerprint", "already_present", "source", "requester",
-            "requester_agent", "committer", "error")
+            "requester_agent", "requester_platform", "committer", "error")
     out = {k: change.get(k) for k in keys if change.get(k) not in (None, "", [])}
     for k in ("staged_at", "committed_at", "withdrawn_at", "rollback_used_at"):
         if change.get(k):

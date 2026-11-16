@@ -142,9 +142,21 @@ def _readable(path: str) -> None:
     os.chmod(path, 0o644)
 
 
-def render_alertmanager(template: str) -> str:
-    """The template, marked as generated."""
-    return HEADER + template
+PLATFORM_MARKER = "# PLATFORM_WEBHOOKS"
+
+
+def render_alertmanager(template: str, platforms: str = "") -> str:
+    """The template, marked as generated, with the connected platforms' webhooks (config-init writes them to
+    alertmanager-platforms.yml from agenticops.yml; empty when none) inserted after the marker line, exactly as
+    config-init does: a render must never drop them."""
+    if not platforms.strip():
+        return HEADER + template
+    out = []
+    for line in template.splitlines(keepends=True):
+        out.append(line)
+        if PLATFORM_MARKER in line:
+            out.append(platforms if platforms.endswith("\n") else platforms + "\n")
+    return HEADER + "".join(out)
 
 
 def reload_alertmanager() -> str:
@@ -635,8 +647,10 @@ def main() -> int:
         with open(ALERTMANAGER_TEMPLATE) as fh:
             template = fh.read()
         path = os.path.join(OUT_DIR, "alertmanager.yml")
+        fragment = os.path.join(OUT_DIR, "alertmanager-platforms.yml")
+        platforms = open(fragment).read() if os.path.exists(fragment) else ""
         with open(path, "w") as fh:
-            fh.write(render_alertmanager(template))
+            fh.write(render_alertmanager(template, platforms))
         _readable(path)
         written.append("alertmanager.yml")
         problem = reload_alertmanager()

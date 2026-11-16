@@ -42,8 +42,8 @@ make seed      # when the YAML changed
 1.x turned these attributes into Alertmanager routes: an `investigate` receiver
 for the alerts they named, `notify` for the rest. In 2.0.0 there is no
 `investigate` receiver: every alert goes to `notify` (the stack's own,
-`ALERT_WEBHOOK_URL`) and to `platform` (a connected platform's,
-`agenticops.yml` `alerts.webhook`). The attributes and their values stay as they
+`ALERT_WEBHOOK_URL`) and to `platform` (each connected platform's,
+`agenticops.yml` `platforms.<name>.alert_webhook`). The attributes and their values stay as they
 were; a platform that acted on `"receiver": "investigate"` reads them instead.
 
 ## Maintenance

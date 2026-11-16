@@ -120,22 +120,25 @@ Every alert goes to two receivers, each a webhook:
 | Receiver | URL | Set in |
 |---|---|---|
 | `notify` | `ALERT_WEBHOOK_URL` | `site.yml` `alerts.webhook_url` |
-| `platform` | `PLATFORM_ALERT_WEBHOOK_URL` | `agenticops.yml` `alerts.webhook` (a connected platform) |
+| `platform` | one webhook per connected platform (`PLATFORM_ALERT_WEBHOOKS`), each with its token | `agenticops.yml` `platforms.<name>.alert_webhook`; the token: `install.py --platform-token <name>` |
 
 ```bash
 python3 install.py --step 2 && docker compose up -d --force-recreate config-init alertmanager
 ```
 
 Either left empty delivers nowhere: alerts collect in the Alertmanager UI and the
-stack starts with no external dependency. The body's `"receiver"` says which
+stack starts with no external dependency (with no platform connected, the
+`platform` receiver has no webhook at all). The body's `"receiver"` says which
 receiver a delivery is for. The stack does not decide which alert matters to
 whom: a connected platform does, from what it receives (it may read each
 device's `auto_investigate` attributes in Infrahub: [auto-investigate.md](auto-investigate.md)).
 
 **Alertmanager has no environment-variable expansion of its own**, so
-`config-init` writes each URL to a file (`/etc/alertmanager/webhook-url`, `…/platform-webhook-url`) that its receiver
-reads (`url_file`), and writes the config itself from `observability/alertmanager/alertmanager.yml.tmpl` on every
-start (`make render` too, and reloads Alertmanager). Edit the `.tmpl`, never the written copy, then `make render`.
+`config-init` writes each URL to a file (`/etc/alertmanager/webhook-url`, `…/platform-<name>-url`, and each platform's
+token to `…/platform-<name>-token`) that its receiver reads (`url_file`, `credentials_file`), the platforms' entries to
+`observability/telegraf/generated/alertmanager-platforms.yml`, and the config itself from
+`observability/alertmanager/alertmanager.yml.tmpl` with those entries inserted, on every start (`make render` too,
+and reloads Alertmanager). Edit the `.tmpl`, never the written copy, then `make render`.
 
 For Slack, email or PagerDuty, add it to a receiver in the template:
 

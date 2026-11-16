@@ -69,8 +69,9 @@ just are not delivered anywhere.
 **Alertmanager has no environment-variable expansion at all** — a `${VAR}` in
 its config is a hard parse failure. The `config-init` service writes each URL to a
 file its receiver reads (`url_file`): `notify` (`ALERT_WEBHOOK_URL`) and `platform`
-(`PLATFORM_ALERT_WEBHOOK_URL`, a connected platform's). It also writes the config
-from the template on every start; `make render` does too, and reloads Alertmanager.
+(one webhook per connected platform, `PLATFORM_ALERT_WEBHOOKS`, each platform's
+token in a file too: `credentials_file`). It also writes the config from the
+template on every start; `make render` does too, and reloads Alertmanager.
 Every alert goes to both receivers ([change-alerts.md](../how-to/change-alerts.md#sending-alerts-somewhere)).
 
 Edit the `.tmpl`, never the rendered copy, then:

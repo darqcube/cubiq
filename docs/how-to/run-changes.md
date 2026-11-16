@@ -35,8 +35,8 @@ sequenceDiagram
 |---|---|
 | `MCP_AUTH_TOKEN` (shared) | read |
 | `MCP_EXECUTE_TOKEN` (shared) | execute |
-| An identity provider's token (`agenticops.yml` `access:`), from a client listed with `execute` | execute |
-| Any other valid token from that provider | `default_scope`: read, or none |
+| A connected platform's token (`agenticops.yml` `platforms: <name>:`), from a client listed with `execute` there | execute |
+| Any other valid token from that platform's provider | its `default_scope`: read, or none |
 
 Execute covers read. Without an identity provider the stack runs on the two
 tokens alone, so a standalone install can still run its own automation; keep the

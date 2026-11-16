@@ -8,6 +8,7 @@ Needs darqcube/mcp:local (docker compose build mcp-infrahub). No running stack.
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -79,8 +80,10 @@ def test_one_token_for_both_scopes_is_refused_at_start():
 
 
 def test_execute_is_never_a_default_scope():
-    out = start("netmiko", {"MCP_OIDC_DEFAULT_SCOPE": "execute"})
-    assert "MCP_OIDC_DEFAULT_SCOPE must be read or none" in out
+    platform = {"name": "lab", "issuer": "http://idp.example/r", "jwks_url": "http://idp.example/k",
+                "default_scope": "execute"}
+    out = start("netmiko", {"MCP_OIDC_PLATFORMS": json.dumps([platform])})
+    assert "lab.default_scope must be read or none" in out
 
 
 # --- static analysis of the tool surface ----------------------------------

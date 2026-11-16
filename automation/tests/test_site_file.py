@@ -6,6 +6,8 @@ configured, so its reader, validation and derivation all get pinned here.
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import re
 from pathlib import Path
 
@@ -320,15 +322,21 @@ def test_grafana_links_use_an_address_a_person_can_open(inst, site):
     assert inst.site_to_env(site)["GRAFANA_PUBLIC_URL"] == "http://192.0.2.10:13000"
 
 
-CONNECTION = {
-    "access": {
-        "issuer": "http://idp.example/realms/demo",
-        "jwks_url": "http://192.0.2.1:7080/realms/demo/certs",
-        "audiences": "cubiq",
-        "clients": {"platform-control": "execute", "platform-preprod": "read"},
-    },
-    "alerts": {"webhook": "http://192.0.2.1:9100/alerts"},
+LAB = {
+    "issuer": "http://idp.example/realms/demo",
+    "jwks_url": "http://192.0.2.1:7080/realms/demo/certs",
+    "audiences": "cubiq",
+    "clients": {"platform-control": "execute"},
+    "alert_webhook": "http://192.0.2.1:9100/alertmanager",
 }
+STAGING = {
+    "issuer": "http://idp.staging.example/realms/demo",
+    "jwks_url": "http://192.0.2.2:7080/realms/demo/certs",
+    "audiences": "cubiq",
+    "clients": {"platform-control": "read"},
+    "alert_webhook": "http://192.0.2.2:9100/alertmanager",
+}
+CONNECTION = {"platforms": {"lab": LAB, "staging": STAGING}}
 
 
 def connection(**changes):
@@ -339,6 +347,18 @@ def connection(**changes):
     return out
 
 
+def with_platform(name="lab", **fields):
+    """CONNECTION with one platform's fields changed."""
+    import copy
+    out = copy.deepcopy(CONNECTION)
+    out["platforms"][name].update(fields)
+    return out
+
+
+def platforms_env(env) -> dict:
+    return {p["name"]: p for p in json.loads(env["MCP_OIDC_PLATFORMS"])}
+
+
 # --- standalone: no agenticops.yml ------------------------------------------
 
 def test_standalone_without_a_connection_file(inst, site):
@@ -346,9 +366,7 @@ def test_standalone_without_a_connection_file(inst, site):
     assert not inst.validate_ai_platform(site)
     env = inst.site_to_env(site)
     assert env["MCP_AUTH_MODE"] == "token"
-    assert env["MCP_OIDC_ISSUER"] == env["MCP_OIDC_JWKS_URL"] == env["MCP_OIDC_CLIENT_SCOPES"] == ""
-    assert env["PLATFORM_ALERT_WEBHOOK_URL"] == ""
-    assert env["MCP_OIDC_DEFAULT_SCOPE"] == "read"
+    assert env["MCP_OIDC_PLATFORMS"] == "" and env["PLATFORM_ALERT_WEBHOOKS"] == ""
 
 
 def test_the_example_connection_file_is_valid_and_agrees_with_pyyaml(inst):
@@ -366,54 +384,110 @@ def test_the_connection_file_is_gitignored():
 
 # --- agenticops.yml -----------------------------------------------------------
 
-def test_a_connection_gives_oidc_and_each_clients_scope(inst, site):
+def test_each_platform_gets_its_issuer_and_its_clients_scopes(inst, site):
     site["ai_platform"]["auth"].pop("mode", None)
     conn = connection()
     assert not inst.validate_ai_platform(site, conn) and not inst.validate_connection(conn)
     env = inst.site_to_env(site, conn)
-    assert env["MCP_AUTH_MODE"] == "oidc", "access: without a mode line means oidc"
-    assert env["MCP_OIDC_ISSUER"] == "http://idp.example/realms/demo"
-    assert env["MCP_OIDC_JWKS_URL"] == "http://192.0.2.1:7080/realms/demo/certs"
-    assert env["MCP_OIDC_CLIENT_SCOPES"] == "platform-control=execute,platform-preprod=read"
-    assert env["PLATFORM_ALERT_WEBHOOK_URL"] == "http://192.0.2.1:9100/alerts"
+    assert env["MCP_AUTH_MODE"] == "oidc", "a platform without a mode line means oidc"
+    found = platforms_env(env)
+    assert list(found) == ["lab", "staging"]
+    assert found["lab"] == {"name": "lab", "issuer": "http://idp.example/realms/demo",
+                            "jwks_url": "http://192.0.2.1:7080/realms/demo/certs", "audiences": ["cubiq"],
+                            "default_scope": "read", "clients": {"platform-control": "execute"}, "agent_claim": "azp"}
+    assert found["staging"]["clients"] == {"platform-control": "read"}
+    assert env["PLATFORM_ALERT_WEBHOOKS"] == ("lab=http://192.0.2.1:9100/alertmanager,"
+                                              "staging=http://192.0.2.2:9100/alertmanager")
 
 
-def test_the_platform_webhook_is_separate_from_the_stacks_own(inst, site):
+def test_the_platforms_line_is_compact_and_stable(inst, site):
+    """One .env line that Compose reads as it is: no spaces, no quotes to strip, the same on every run."""
+    a = inst.site_to_env(site, connection())["MCP_OIDC_PLATFORMS"]
+    b = inst.site_to_env(site, {"platforms": dict(reversed(list(CONNECTION["platforms"].items())))})["MCP_OIDC_PLATFORMS"]
+    assert a == b and " " not in a and "#" not in a and not a.startswith(("'", '"'))
+
+
+def test_platform_webhooks_are_separate_from_the_stacks_own(inst, site):
     site.setdefault("alerts", {})["webhook_url"] = "http://192.0.2.50/hook"
     env = inst.site_to_env(site, connection())
     assert env["ALERT_WEBHOOK_URL"] == "http://192.0.2.50/hook"
-    assert env["PLATFORM_ALERT_WEBHOOK_URL"] == "http://192.0.2.1:9100/alerts"
+    assert "192.0.2.50" not in env["PLATFORM_ALERT_WEBHOOKS"]
 
 
-def test_access_needs_issuer_and_jwks(inst):
-    problems = inst.validate_connection(connection(access={"clients": {"c": "read"}}))
-    assert any("access.issuer is required" in p for p in problems)
-    assert any("access.jwks_url is required" in p for p in problems)
+def test_a_platform_needs_issuer_and_jwks(inst):
+    problems = inst.validate_connection({"platforms": {"lab": {"clients": {"c": "read"}}}})
+    assert any("platforms.lab.issuer is required" in p for p in problems)
+    assert any("platforms.lab.jwks_url is required" in p for p in problems)
+
+
+def test_two_platforms_never_share_an_issuer(inst):
+    """A token's issuer picks the platform: two with one issuer would make the scope ambiguous."""
+    problems = inst.validate_connection(with_platform("staging", issuer=LAB["issuer"]))
+    assert any("platforms.staging.issuer is also platforms.lab's" in p for p in problems)
+
+
+def test_a_platform_name_is_a_plain_label(inst):
+    for bad in ("Lab", "lab_1", "-lab", "a" * 40):
+        problems = inst.validate_connection({"platforms": {bad: LAB}})
+        assert any("a platform's name" in p for p in problems), bad
 
 
 def test_audiences_accept_a_list_or_a_csv(inst, site):
     for value in (["a", "b"], "a,b", "a, b"):
-        conn = connection(access={**CONNECTION["access"], "audiences": value})
-        assert inst.site_to_env(site, conn)["MCP_OIDC_AUDIENCES"] == "a,b"
+        env = inst.site_to_env(site, with_platform(audiences=value))
+        assert platforms_env(env)["lab"]["audiences"] == ["a", "b"]
 
 
 def test_execute_only_for_named_clients(inst):
     """No default_scope of execute: a person's token, or any client, never gets the execute tools by default."""
-    problems = inst.validate_connection(connection(access={**CONNECTION["access"], "default_scope": "execute"}))
-    assert any("default_scope 'execute'" in p for p in problems)
-    problems = inst.validate_connection(connection(access={**CONNECTION["access"], "clients": {"x": "admin"}}))
-    assert any("access.clients.x 'admin'" in p for p in problems)
+    problems = inst.validate_connection(with_platform(default_scope="execute"))
+    assert any("platforms.lab.default_scope 'execute'" in p for p in problems)
+    problems = inst.validate_connection(with_platform(clients={"x": "admin"}))
+    assert any("platforms.lab.clients.x 'admin'" in p for p in problems)
 
 
 def test_an_unknown_key_in_the_connection_is_refused(inst):
     problems = inst.validate_connection({**CONNECTION, "changes": {"four_eyes": True}})
     assert any("unknown key 'changes'" in p for p in problems)
-    problems = inst.validate_connection(connection(alerts={"webhok": "http://x"}))
-    assert any("unknown key 'webhok'" in p for p in problems)
+    problems = inst.validate_connection(with_platform(webhok="http://x"))
+    assert any("unknown key 'webhok' in agenticops.yml: platforms.lab" in p for p in problems)
 
 
-def test_a_platform_webhook_must_be_a_url(inst):
-    assert any("alerts.webhook" in p for p in inst.validate_connection(connection(alerts={"webhook": "not a url"})))
+def test_the_old_access_and_alerts_sections_say_where_they_went(inst):
+    problems = inst.validate_connection({"access": {"issuer": "http://i"}, "alerts": {"webhook": "http://w"}})
+    assert sum("became 'platforms: <name>:'" in p for p in problems) == 2
+
+
+def test_a_platform_webhook_must_be_a_url_without_a_comma(inst):
+    for bad in ("not a url", "http://192.0.2.1/a,b"):
+        assert any("platforms.lab.alert_webhook" in p for p in inst.validate_connection(with_platform(alert_webhook=bad)))
+
+
+def test_a_webhook_token_is_set_from_stdin_and_never_shown(inst, tmp_path, monkeypatch, capsys):
+    env = tmp_path / ".env"
+    env.write_text("MCP_AUTH_MODE=oidc\nPLATFORM_ALERT_TOKENS=\n")
+    monkeypatch.setattr(inst, "ENV", env)
+    secret = "s3cret-" + "x" * 30
+    monkeypatch.setattr("sys.stdin", io.StringIO(secret + "\n"))
+    assert inst.set_platform_token("lab") == 0
+    monkeypatch.setattr("sys.stdin", io.StringIO("t" * 20 + "\n"))
+    assert inst.set_platform_token("staging") == 0
+    assert inst.platform_tokens(inst.read_env(env)["PLATFORM_ALERT_TOKENS"]) == {"lab": secret, "staging": "t" * 20}
+    assert secret not in capsys.readouterr().out, "a token is never printed"
+    assert oct(env.stat().st_mode & 0o777) == "0o600"
+    monkeypatch.setattr("sys.stdin", io.StringIO("\n"))
+    assert inst.set_platform_token("lab") == 0
+    assert inst.platform_tokens(inst.read_env(env)["PLATFORM_ALERT_TOKENS"]) == {"staging": "t" * 20}, "empty removes"
+
+
+def test_a_webhook_token_with_a_comma_or_a_bad_name_is_refused(inst, tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text("PLATFORM_ALERT_TOKENS=\n")
+    monkeypatch.setattr(inst, "ENV", env)
+    monkeypatch.setattr("sys.stdin", io.StringIO("a" * 20 + ",b\n"))
+    assert inst.set_platform_token("lab") == 2
+    assert inst.set_platform_token("Lab") == 2
+    assert env.read_text() == "PLATFORM_ALERT_TOKENS=\n"
 
 
 def test_overlay_services_are_checked(inst):
@@ -439,11 +513,11 @@ def test_token_mode_would_ignore_a_connection(inst, site):
 # --- 1.x settings: refused, saying where they went ---------------------------
 
 @pytest.mark.parametrize("key, value, where", [
-    ("auth.issuer", "http://idp.example/realms/demo", "access.issuer"),
-    ("auth.jwks_url", "http://192.0.2.1/certs", "access.jwks_url"),
-    ("auth.audiences", "a", "access.audiences"),
-    ("auth.agent_claim", "azp", "access.agent_claim"),
-    ("alert_webhook_url", "http://192.0.2.1/a", "alerts.webhook"),
+    ("auth.issuer", "http://idp.example/realms/demo", "platforms.<name>.issuer"),
+    ("auth.jwks_url", "http://192.0.2.1/certs", "platforms.<name>.jwks_url"),
+    ("auth.audiences", "a", "platforms.<name>.audiences"),
+    ("auth.agent_claim", "azp", "platforms.<name>.agent_claim"),
+    ("alert_webhook_url", "http://192.0.2.1/a", "platforms.<name>.alert_webhook"),
     ("alert_profile", "demo", "alerts.profile"),
 ])
 def test_a_moved_key_names_where_it_went(inst, site, key, value, where):
@@ -500,28 +574,31 @@ def test_max_response_is_bounded_and_in_bytes(inst, site):
 
 def test_set_env_values_replaces_and_appends(inst):
     text = "A=1\nMCP_AUTH_MODE=token   # comment\n"
-    out = inst.set_env_values(text, {"MCP_AUTH_MODE": "oidc", "MCP_OIDC_ISSUER": "http://i"})
+    out = inst.set_env_values(text, {"MCP_AUTH_MODE": "oidc", "MCP_OIDC_PLATFORMS": "[]"})
     assert "MCP_AUTH_MODE=oidc\n" in out and "A=1\n" in out
-    assert out.rstrip().endswith("MCP_OIDC_ISSUER=http://i"), "a key missing from an older .env was not added"
+    assert out.rstrip().endswith("MCP_OIDC_PLATFORMS=[]"), "a key missing from an older .env was not added"
 
 
 def test_a_connection_applies_to_an_existing_env(inst, tmp_path, monkeypatch):
     """An install done without a site file still takes agenticops.yml — and only its keys change."""
     env = tmp_path / ".env"
     env.write_text("SYSLOG_COLLECTOR_IP=192.0.2.10\nMCP_BIND_IP=192.0.2.10\nMCP_AUTH_MODE=token\n"
-                   "DEVICE_PASSWORD=keep\nMCP_ALLOW_WRITE=false\nALERT_WEBHOOK_URL=http://192.0.2.50/keep\n")
+                   "DEVICE_PASSWORD=keep\nMCP_ALLOW_WRITE=false\nALERT_WEBHOOK_URL=http://192.0.2.50/keep\n"
+                   "PLATFORM_ALERT_TOKENS=lab=" + "k" * 20 + "\n")
     conn = tmp_path / "agenticops.yml"
-    conn.write_text("access:\n  issuer: http://idp.example/realms/demo\n"
-                    "  jwks_url: http://192.0.2.1:7080/realms/demo/certs\n"
-                    "  clients:\n    platform-control: execute\n"
-                    "alerts:\n  webhook: http://192.0.2.1:9100/alerts\n")
+    conn.write_text("platforms:\n  lab:\n    issuer: http://idp.example/realms/demo\n"
+                    "    jwks_url: http://192.0.2.1:7080/realms/demo/certs\n"
+                    "    clients:\n      platform-control: execute\n"
+                    "    alert_webhook: http://192.0.2.1:9100/alertmanager\n")
     monkeypatch.setattr(inst, "ENV", env)
     inst.apply_connection_to_env(conn)
     values = inst.read_env(env)
     assert values["MCP_AUTH_MODE"] == "oidc"
-    assert values["MCP_OIDC_JWKS_URL"] == "http://192.0.2.1:7080/realms/demo/certs"
-    assert values["MCP_OIDC_CLIENT_SCOPES"] == "platform-control=execute"
-    assert values["PLATFORM_ALERT_WEBHOOK_URL"] == "http://192.0.2.1:9100/alerts"
+    lab = platforms_env(values)["lab"]
+    assert lab["jwks_url"] == "http://192.0.2.1:7080/realms/demo/certs"
+    assert lab["clients"] == {"platform-control": "execute"}
+    assert values["PLATFORM_ALERT_WEBHOOKS"] == "lab=http://192.0.2.1:9100/alertmanager"
+    assert values["PLATFORM_ALERT_TOKENS"] == "lab=" + "k" * 20, "the webhook's token is not the connection's to change"
     assert values["ALERT_WEBHOOK_URL"] == "http://192.0.2.50/keep", "the stack's own receiver is not the connection's"
     assert values["DEVICE_PASSWORD"] == "keep" and values["MCP_ALLOW_WRITE"] == "false"
     assert values["MCP_BIND_IP"] == "192.0.2.10", "publishing is site.yml's, not the connection's"
@@ -531,7 +608,7 @@ def test_a_bad_connection_changes_nothing(inst, tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_text("MCP_AUTH_MODE=token\n")
     conn = tmp_path / "agenticops.yml"
-    conn.write_text("access:\n  issuer: not-a-url\n")
+    conn.write_text("platforms:\n  lab:\n    issuer: not-a-url\n")
     monkeypatch.setattr(inst, "ENV", env)
     inst.apply_connection_to_env(conn)
     assert env.read_text() == "MCP_AUTH_MODE=token\n"

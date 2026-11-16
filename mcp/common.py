@@ -14,10 +14,12 @@ WHO MAY CALL — MCP_AUTH_MODE
 
   token   two shared secrets (default): MCP_AUTH_TOKEN gives the read scope,
           MCP_EXECUTE_TOKEN the execute scope. No identity, no provider.
-  oidc    the caller's own JWT from the connected platform's identity provider
-          (agenticops.yml access:), checked against its JWKS. Every call is
-          attributable; the token's client (azp) has the scope MCP_OIDC_CLIENT_SCOPES
-          names, any other the default (MCP_OIDC_DEFAULT_SCOPE: read or none).
+  oidc    the caller's own JWT from a connected platform's identity provider
+          (agenticops.yml platforms:, one or more), checked against that
+          provider's JWKS. The token's issuer picks the platform; every call is
+          attributable to a person and a platform. The token's client (azp) has
+          the scope that platform's clients name, any other its default_scope
+          (read or none). MCP_OIDC_PLATFORMS carries them (install.py writes it).
   both    either. For cut-over, and for tooling on the host that has the tokens.
 
 WHAT A SCOPE ALLOWS
@@ -37,6 +39,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 import anyio
@@ -50,32 +53,60 @@ CUBIQ_VERSION = os.environ.get("CUBIQ_VERSION", "").strip() or "unknown"
 AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
 EXECUTE_TOKEN = os.environ.get("MCP_EXECUTE_TOKEN", "")
 AUTH_MODE = (os.environ.get("MCP_AUTH_MODE") or "token").strip().lower()
-OIDC_ISSUER = os.environ.get("MCP_OIDC_ISSUER", "").strip()
-OIDC_JWKS_URL = os.environ.get("MCP_OIDC_JWKS_URL", "").strip()
-OIDC_AUDIENCES = [a.strip() for a in os.environ.get("MCP_OIDC_AUDIENCES", "").split(",") if a.strip()]
-# The claim naming the calling agent, when the platform gives each agent its own
-# client (token exchange). Recorded on every change and in the audit line.
-AGENT_CLAIM = os.environ.get("MCP_AGENT_CLAIM", "").strip() or "azp"
-
 SCOPES = ("read", "execute")
-DEFAULT_SCOPE = (os.environ.get("MCP_OIDC_DEFAULT_SCOPE") or "read").strip().lower()
 
 
-def parse_client_scopes(raw: str) -> dict[str, str]:
-    """MCP_OIDC_CLIENT_SCOPES: "client-id=scope,…" (install.py writes it from agenticops.yml)."""
-    found: dict[str, str] = {}
-    for pair in (p.strip() for p in raw.split(",") if p.strip()):
-        client, sep, scope = pair.partition("=")
-        if not sep or not client.strip() or scope.strip().lower() not in SCOPES:
-            raise SystemExit(f"MCP_OIDC_CLIENT_SCOPES: {pair!r} — expected client-id=read or client-id=execute")
-        found[client.strip()] = scope.strip().lower()
+@dataclass(frozen=True)
+class Platform:
+    """One connected platform (agenticops.yml platforms.<name>): its identity provider and what its tokens may do."""
+    name: str
+    issuer: str
+    jwks_url: str
+    audiences: tuple[str, ...] = ()
+    default_scope: str = "read"                  # any valid token from this provider: read or none
+    clients: dict = field(default_factory=dict)  # OIDC client id (azp) -> read | execute
+    agent_claim: str = "azp"                     # the claim naming the calling agent, for the audit line
+
+
+def parse_platforms(raw: str) -> list[Platform]:
+    """MCP_OIDC_PLATFORMS: a JSON list install.py writes from agenticops.yml. Wrong here = a server that refuses to
+    start, never one that trusts more than it should."""
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    try:
+        items = json.loads(raw)
+    except ValueError as exc:
+        raise SystemExit(f"MCP_OIDC_PLATFORMS is not JSON ({exc}): run python3 install.py --step 2") from exc
+    if not isinstance(items, list):
+        raise SystemExit("MCP_OIDC_PLATFORMS must be a list: run python3 install.py --step 2")
+    found: list[Platform] = []
+    for item in items:
+        name = str((item or {}).get("name") or "")
+        try:
+            clients = {str(k): str(v).strip().lower() for k, v in (item.get("clients") or {}).items()}
+            p = Platform(name=name, issuer=str(item["issuer"]).strip(), jwks_url=str(item["jwks_url"]).strip(),
+                         audiences=tuple(str(a).strip() for a in item.get("audiences") or [] if str(a).strip()),
+                         default_scope=str(item.get("default_scope") or "read").strip().lower(),
+                         clients=clients, agent_claim=str(item.get("agent_claim") or "azp").strip())
+        except (AttributeError, KeyError, TypeError) as exc:
+            raise SystemExit(f"MCP_OIDC_PLATFORMS: platform {name!r} is incomplete ({exc})") from exc
+        if not (p.name and p.issuer and p.jwks_url):
+            raise SystemExit(f"MCP_OIDC_PLATFORMS: platform {name!r} needs a name, an issuer and a jwks_url")
+        if p.default_scope not in ("read", "none"):
+            raise SystemExit(f"MCP_OIDC_PLATFORMS: {p.name}.default_scope must be read or none "
+                             f"(got {p.default_scope!r}): execute is given to named clients only")
+        bad = {c: s for c, s in p.clients.items() if s not in SCOPES}
+        if bad:
+            raise SystemExit(f"MCP_OIDC_PLATFORMS: {p.name}.clients {bad} — each read or execute")
+        if any(p.issuer == q.issuer for q in found) or any(p.name == q.name for q in found):
+            raise SystemExit(f"MCP_OIDC_PLATFORMS: {p.name} repeats a name or an issuer: a token's issuer must name "
+                             "exactly one platform")
+        found.append(p)
     return found
 
 
-CLIENT_SCOPES = parse_client_scopes(os.environ.get("MCP_OIDC_CLIENT_SCOPES", ""))
-if DEFAULT_SCOPE not in ("read", "none"):
-    raise SystemExit(f"MCP_OIDC_DEFAULT_SCOPE must be read or none (got {DEFAULT_SCOPE!r}): "
-                     "execute is given to named clients only")
+PLATFORMS = parse_platforms(os.environ.get("MCP_OIDC_PLATFORMS", ""))
 
 # 512 KiB suits a large model. A small local model's whole context can be
 # smaller than that, so a deployment can lower it (site.yml max_response_kb).
@@ -226,13 +257,11 @@ class AuthError(Exception):
 class Verifier:
     """Decides who a bearer credential belongs to, and its scope, per MCP_AUTH_MODE.
 
-    Returns a caller dict: {"user", "sub", "via", "agent", "scope"}.
+    Returns a caller dict: {"user", "sub", "via", "platform", "agent", "scope"}.
     """
 
-    def __init__(self, mode: str = AUTH_MODE, token: str = AUTH_TOKEN, issuer: str = OIDC_ISSUER,
-                 jwks_url: str = OIDC_JWKS_URL, audiences: list[str] | None = None,
-                 execute_token: str = EXECUTE_TOKEN, client_scopes: dict[str, str] | None = None,
-                 default_scope: str = DEFAULT_SCOPE):
+    def __init__(self, mode: str = AUTH_MODE, token: str = AUTH_TOKEN, platforms: list[Platform] | None = None,
+                 execute_token: str = EXECUTE_TOKEN):
         if mode not in AUTH_MODES:
             raise SystemExit(f"MCP_AUTH_MODE must be one of {', '.join(AUTH_MODES)} (got {mode!r})")
         # Fail at startup, not at the first request: an empty token used to
@@ -241,21 +270,21 @@ class Verifier:
             raise SystemExit(f"MCP_AUTH_MODE={mode} needs MCP_AUTH_TOKEN")
         if execute_token and hmac.compare_digest(execute_token, token):
             raise SystemExit("MCP_EXECUTE_TOKEN must differ from MCP_AUTH_TOKEN: the read token would execute")
-        if mode in ("oidc", "both") and not (issuer and jwks_url):
-            raise SystemExit(f"MCP_AUTH_MODE={mode} needs MCP_OIDC_ISSUER and MCP_OIDC_JWKS_URL")
-        self.mode, self.token, self.issuer = mode, token, issuer
-        self.execute_token = execute_token
-        self.client_scopes = client_scopes if client_scopes is not None else CLIENT_SCOPES
-        self.default_scope = default_scope
-        self.audiences = audiences if audiences is not None else OIDC_AUDIENCES
-        self._jwks = None
+        platforms = PLATFORMS if platforms is None else platforms
+        if mode in ("oidc", "both") and not platforms:
+            raise SystemExit(f"MCP_AUTH_MODE={mode} needs a connected platform (agenticops.yml platforms:, "
+                             "written to MCP_OIDC_PLATFORMS by python3 install.py --step 2)")
+        self.mode, self.token, self.execute_token = mode, token, execute_token
+        self.platforms = {p.issuer: p for p in platforms}
+        self._jwks: dict[str, Any] = {}
         if mode in ("oidc", "both"):
             import jwt  # pyjwt[crypto] — only needed when OIDC is on
 
             self._jwt = jwt
-            # Keys are cached, and refetched when a token names an unknown kid,
-            # so an identity-provider key rotation needs no restart.
-            self._jwks = jwt.PyJWKClient(jwks_url, cache_keys=True, lifespan=3600, timeout=10)
+            # One key client per platform. Keys are cached, and refetched when a token names an unknown kid, so an
+            # identity-provider key rotation needs no restart; nothing is fetched before a token arrives.
+            self._jwks = {p.issuer: jwt.PyJWKClient(p.jwks_url, cache_keys=True, lifespan=3600, timeout=10)
+                          for p in platforms}
 
     def verify(self, header: str) -> dict:
         if not header.lower().startswith("bearer "):
@@ -264,41 +293,54 @@ class Verifier:
 
         if self.mode in ("token", "both"):
             if hmac.compare_digest(credential, self.token):
-                return {"user": "token", "sub": "token", "via": "token", "agent": None, "scope": "read"}
+                return {"user": "token", "sub": "token", "via": "token", "platform": None, "agent": None,
+                        "scope": "read"}
             if self.execute_token and hmac.compare_digest(credential, self.execute_token):
-                return {"user": "execute-token", "sub": "execute-token", "via": "token", "agent": None,
-                        "scope": "execute"}
+                return {"user": "execute-token", "sub": "execute-token", "via": "token", "platform": None,
+                        "agent": None, "scope": "execute"}
         if self.mode == "token":
             raise AuthError("bad token")
         return self._verify_jwt(credential)
 
     def _verify_jwt(self, credential: str) -> dict:
         jwt = self._jwt
+        # The unverified issuer only CHOOSES which platform's keys to check with: the signature, the issuer and the
+        # audience are then verified against that platform alone, so a forged "iss" gains nothing.
         try:
-            key = self._jwks.get_signing_key_from_jwt(credential).key
+            claimed = jwt.decode(credential, options={"verify_signature": False}).get("iss")
+        except jwt.InvalidTokenError as exc:
+            raise AuthError(f"invalid token: {exc}") from exc
+        platform = self.platforms.get(claimed) if isinstance(claimed, str) else None
+        if platform is None:
+            raise AuthError("issuer not trusted: no connected platform has it")
+        try:
+            key = self._jwks[platform.issuer].get_signing_key_from_jwt(credential).key
             claims = jwt.decode(
                 credential, key,
                 algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "PS256"],
-                issuer=self.issuer,
-                audience=self.audiences or None,
-                options={"require": ["exp", "iss", "sub"], "verify_aud": bool(self.audiences)},
+                issuer=platform.issuer,
+                audience=list(platform.audiences) or None,
+                options={"require": ["exp", "iss", "sub"], "verify_aud": bool(platform.audiences)},
                 leeway=30,
             )
         except jwt.PyJWKClientError as exc:
-            raise AuthError(f"cannot fetch signing keys: {exc}") from exc
+            raise AuthError(f"cannot fetch {platform.name}'s signing keys: {exc}") from exc
         except jwt.InvalidTokenError as exc:
             raise AuthError(f"invalid token: {exc}") from exc
 
         # The client the token was issued to decides the scope: never a role, a group or a person's name.
         client = claims.get("azp") or claims.get("client_id")
-        scope = self.client_scopes.get(client, self.default_scope) if isinstance(client, str) else self.default_scope
+        scope = platform.clients.get(client, platform.default_scope) if isinstance(client, str) \
+            else platform.default_scope
         if scope not in SCOPES:
             raise AuthError(f"client {client!r} has no scope here")
+        agent = claims.get(platform.agent_claim)
         return {
             "user": claims.get("preferred_username") or claims.get("email") or claims["sub"],
             "sub": claims["sub"],
             "via": "oidc",
-            "agent": claims.get(AGENT_CLAIM) if isinstance(claims.get(AGENT_CLAIM), str) else None,
+            "platform": platform.name,
+            "agent": agent if isinstance(agent, str) else None,
             "scope": scope,
         }
 
@@ -348,8 +390,9 @@ class _Auth:
         await self.app(scope, recording_receive, send)
         # Prefixed so `grep audit` finds it whatever log format is active —
         # the MCP SDK configures a bare %(message)s format.
-        log.info("audit user=%s sub=%s via=%s agent=%s scope=%s server=%s %s", caller["user"], caller["sub"],
-                 caller["via"], caller.get("agent") or "-", caller["scope"], self.server, _rpc_summary(bytes(body)))
+        log.info("audit user=%s sub=%s via=%s platform=%s agent=%s scope=%s server=%s %s", caller["user"],
+                 caller["sub"], caller["via"], caller.get("platform") or "-", caller.get("agent") or "-",
+                 caller["scope"], self.server, _rpc_summary(bytes(body)))
 
 
 def _rpc_summary(body: bytes) -> str:

@@ -29,10 +29,9 @@ os.environ.update({
     "MCP_AUTH_TOKEN": "test-token",
     "MCP_EXECUTE_TOKEN": "exec-token",
     "MCP_AUTH_MODE": "both",
-    "MCP_OIDC_ISSUER": "http://idp.example/realms/demo",
-    "MCP_OIDC_JWKS_URL": "http://idp.example/jwks",
-    "MCP_OIDC_AUDIENCES": "cubiq",
-    "MCP_OIDC_CLIENT_SCOPES": "platform-control=execute,platform-preprod=read",
+    "MCP_OIDC_PLATFORMS": json.dumps([{"name": "lab", "issuer": "http://idp.example/realms/demo",
+                                       "jwks_url": "http://idp.example/jwks", "audiences": ["cubiq"],
+                                       "clients": {"platform-control": "execute", "platform-preprod": "read"}}]),
     "AUTOMATION_URL": "http://127.0.0.1:9",
 })
 sys.path.insert(0, "/app")
@@ -44,7 +43,7 @@ from starlette.testclient import TestClient  # noqa: E402
 import common  # noqa: E402
 from servers import netmiko  # noqa: E402
 
-ISSUER = os.environ["MCP_OIDC_ISSUER"]
+ISSUER = json.loads(os.environ["MCP_OIDC_PLATFORMS"])[0]["issuer"]
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 JWK = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(KEY.public_key()))
 JWK.update({"kid": "test-key", "use": "sig", "alg": "RS256"})
@@ -161,7 +160,8 @@ with TestClient(APP) as c:
                                                           "source": "run 14"})
         method, path, body = API.calls[-1]
         actor = body["actor"]
-        ok = (path == "/changes" and actor == {"user": "alice", "sub": "u-1", "via": "oidc", "agent": "platform-control"}
+        ok = (path == "/changes" and actor == {"user": "alice", "sub": "u-1", "via": "oidc", "platform": "lab",
+                                             "agent": "platform-control"}
               and not result.get("isError"))
         return ok, actor
     check("stage_passes_the_verified_caller_and_agent_only", stage_identity)

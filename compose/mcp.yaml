@@ -33,13 +33,8 @@ x-mcp-env: &mcp-env
   MCP_EXECUTE_TOKEN: ${MCP_EXECUTE_TOKEN:-}
   # token (the shared secrets) | oidc (the caller's own JWT) | both
   MCP_AUTH_MODE: ${MCP_AUTH_MODE:-token}
-  MCP_OIDC_ISSUER: ${MCP_OIDC_ISSUER:-}
-  MCP_OIDC_JWKS_URL: ${MCP_OIDC_JWKS_URL:-}
-  MCP_OIDC_AUDIENCES: ${MCP_OIDC_AUDIENCES:-}
-  # What a valid token may do (read or none), and each named client's scope (agenticops.yml access:).
-  MCP_OIDC_DEFAULT_SCOPE: ${MCP_OIDC_DEFAULT_SCOPE:-read}
-  MCP_OIDC_CLIENT_SCOPES: ${MCP_OIDC_CLIENT_SCOPES:-}
-  MCP_AGENT_CLAIM: ${MCP_AGENT_CLAIM:-azp}
+  # The connected platforms (agenticops.yml platforms:, JSON from install.py): a token's issuer picks one.
+  MCP_OIDC_PLATFORMS: ${MCP_OIDC_PLATFORMS:-}
   # Host headers accepted besides loopback and the compose name (421 otherwise).
   MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
   MCP_MAX_RESPONSE_BYTES: ${MCP_MAX_RESPONSE_BYTES:-524288}

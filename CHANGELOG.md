@@ -17,15 +17,19 @@ windows, four eyes, management interfaces and alert routing are the connected pl
 
 ### Breaking
 - **The connection is `agenticops.yml`** (optional, gitignored, beside `site.yml`; `agenticops.example.yml`):
-  `access:` (the identity provider, `default_scope` read or none, and each client's scope: `clients: {id: read|execute}`),
-  `alerts.webhook`, `overlay.services`. Absent: standalone. It replaces `sites/ai-platform.yml` and
+  `platforms:`, one entry per connected platform by a name you choose (its identity provider, `default_scope` read or
+  none, each client's scope: `clients: {id: read|execute}`, and its `alert_webhook`), and `overlay.services`. Absent:
+  standalone. Several platforms at once (a production platform and its staging copy): a token's issuer picks the
+  platform, whose keys check it and whose clients scope it; two platforms never share an issuer. It replaces `sites/ai-platform.yml` and
   `ai_platform.auth.issuer`, `jwks_url`, `audiences`, `agent_claim`, `ai_platform.alert_webhook_url`; `install.py --ai-platform`
   becomes `--agenticops`. `ai_platform.alert_profile` moves to `alerts.profile`. Publishing, graphs and the result cap
   stay in `site.yml`.
 - **Scopes, not roles.** A caller has the `read` or the `execute` scope. Token mode has two secrets: `MCP_AUTH_TOKEN`
   (read) and the new `MCP_EXECUTE_TOKEN` (execute, generated; must differ). With an identity provider the token's client
-  (`azp`) decides, from `MCP_OIDC_CLIENT_SCOPES`; any other valid token gets `MCP_OIDC_DEFAULT_SCOPE` (read or none,
-  never execute). A person's roles count for nothing. The audit line names the scope.
+  (`azp`) decides, from its platform's `clients`; any other valid token gets that platform's `default_scope` (read or
+  none, never execute). A person's roles count for nothing. `MCP_OIDC_PLATFORMS` (JSON, written by `install.py`)
+  replaces `MCP_OIDC_ISSUER`, `…_JWKS_URL`, `…_AUDIENCES`, `…_DEFAULT_SCOPE`, `…_CLIENT_SCOPES` and `MCP_AGENT_CLAIM`.
+  The audit line names the platform and the scope; a change records the platform that staged it (`requester_platform`).
 - **Changes: stage, then commit once.** `stage_device_change` reads the device's configuration and returns the
   fingerprint (lines, rollback and that configuration) and `already_present` (the dry run); nothing is sent.
   `commit_device_change(change_id, fingerprint, idempotency_key)` pushes once: a retry with the same key returns the
@@ -39,15 +43,18 @@ windows, four eyes, management interfaces and alert routing are the connected pl
   `WRITE_MODE=direct` with `push_device_config` and `POST /device/{name}/config`, `make config-put`, and the
   `ChangeWaitingForApproval` alert. `site.yml`'s `changes:` section and role keys stop the install, saying so.
 - **Every alert to both receivers.** Alertmanager has `notify` (`ALERT_WEBHOOK_URL`, Cubiq's own) and `platform`
-  (`PLATFORM_ALERT_WEBHOOK_URL`, from `agenticops.yml`); the `investigate` receiver and the routes built from
-  `auto_investigate` are gone. The three `auto_investigate` attributes stay in Infrahub as data a platform reads.
+  (one webhook per connected platform, `PLATFORM_ALERT_WEBHOOKS`, from `agenticops.yml`), each sending that
+  platform's token as `Authorization: Bearer` (`PLATFORM_ALERT_TOKENS`, set with `install.py --platform-token NAME` from
+  standard input: never in YAML, never printed); with no platform connected the receiver has no webhook and sends
+  nothing. The `investigate` receiver and the routes built from `auto_investigate` are gone. The three `auto_investigate` attributes stay in Infrahub as data a platform reads.
   config-init writes Alertmanager's config from its template on every start.
 - **`docs/how-to/approve-changes.md` is `run-changes.md`.**
 
 ### Features
 - `make change-stage DEV=… FILE=…` and `make change-commit ID=… FP=…`: stage and commit from the Cubiq host.
-- `scripts/ai-platform-connect.py` writes `agenticops.yml` (`--client ID=SCOPE`, `--default-scope`), and names where
-  each 1.x option went.
+- `scripts/ai-platform-connect.py` writes `agenticops.yml` (`--name`, `--client ID=SCOPE`, `--default-scope`;
+  `--merge FILE` adds a platform to an existing file, keeping the others; an explicit `--jwks-host` always wins), and
+  names where each 1.x option went.
 - `docs/how-to/connect-an-ai-platform.md` is the guide for connecting AgenticOps directly, without Octelium.
 
 ### Unchanged on purpose

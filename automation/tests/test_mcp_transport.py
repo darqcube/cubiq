@@ -38,10 +38,14 @@ EXPECTED = [
     "oidc_expired_401", "oidc_roles_count_for_nothing_only_the_client_scope",
     "oidc_read_client_is_refused_by_an_execute_tool", "oidc_execute_client_passes_the_scope_gate",
     "default_scope_none_refuses_an_unnamed_client", "default_scope_none_still_admits_a_named_client",
+    "second_platform_valid_200", "the_same_client_has_each_platforms_own_scope",
+    "a_token_signed_by_another_platforms_key_is_refused", "an_issuer_no_platform_has_is_refused",
     "both_accepts_token", "both_accepts_jwt", "both_refuses_garbage",
-    "empty_token_refused_at_startup", "oidc_without_issuer_refused_at_startup", "unknown_mode_refused_at_startup",
+    "empty_token_refused_at_startup", "oidc_without_a_platform_refused_at_startup", "unknown_mode_refused_at_startup",
     "same_read_and_execute_token_refused_at_startup", "an_unknown_client_scope_is_refused_at_startup",
-    "audit_names_user_scope_and_tool", "audit_omits_arguments",
+    "a_default_scope_of_execute_is_refused_at_startup", "two_platforms_with_one_issuer_are_refused_at_startup",
+    "platforms_that_are_not_json_are_refused_at_startup", "the_platforms_line_install_writes_is_read",
+    "audit_names_user_platform_scope_and_tool", "audit_omits_arguments",
     "tools_run_off_the_event_loop", "context_is_not_exposed_as_an_argument",
 ]
 

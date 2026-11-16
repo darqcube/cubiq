@@ -7,9 +7,13 @@ provider's issuer and signing keys, and the address the stack can reach it on
 — so it is read there rather than typed by hand on the stack's machine.
 
     python3 scripts/ai-platform-connect.py \\
-        --stack-host 192.0.2.10 \\
+        --stack-host 192.0.2.10 --name production \\
         --idp http://localhost:7080/realms/<realm> \\
         --client platform-control=execute
+
+A second platform (a staging copy, say) is added to the same file with
+--merge agenticops.yml --name staging: the platforms already in it, and its
+overlay, are kept; one of the same name is replaced.
 
 Writes two files (default: the current directory):
 
@@ -26,6 +30,7 @@ import argparse
 import base64
 import datetime
 import json
+import re
 import socket
 import sys
 import urllib.error
@@ -84,8 +89,9 @@ def address_towards(host: str) -> str:
         fail(f"no route to {host}: {exc}")
 
 
-def reachable_jwks(jwks_uri: str, local_ip: str) -> str:
-    """The JWKS URL with a loopback or container-only hostname replaced.
+def reachable_jwks(jwks_uri: str, local_ip: str, always: bool = False) -> str:
+    """The JWKS URL with a loopback or container-only hostname replaced (any hostname, with `always`: --jwks-host
+    given, e.g. a name only this machine resolves).
 
     The issuer often names `localhost` (it is what a browser on this machine
     uses), which from the stack VM means the VM itself. The ISSUER must stay
@@ -94,7 +100,7 @@ def reachable_jwks(jwks_uri: str, local_ip: str) -> str:
     """
     parts = urllib.parse.urlsplit(jwks_uri)
     host = parts.hostname or ""
-    if host in LOOPBACK_NAMES or "." not in host:
+    if always or host in LOOPBACK_NAMES or "." not in host:
         netloc = local_ip + (f":{parts.port}" if parts.port else "")
         return urllib.parse.urlunsplit(parts._replace(netloc=netloc))
     return jwks_uri
@@ -131,25 +137,71 @@ def parse_client(text: str) -> tuple[str, str]:
     return cid.strip(), scope.strip()
 
 
-def connection_file(args, issuer: str, jwks_url: str, audiences: list[str]) -> str:
-    """agenticops.yml, in the block-style YAML install.py reads."""
+PLATFORM_NAME = re.compile(r"[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?")
+
+
+def platform_name(text: str) -> str:
+    if not PLATFORM_NAME.fullmatch(text):
+        raise argparse.ArgumentTypeError(f"{text!r}: lower case, digits and '-' (up to 32), e.g. production")
+    return text
+
+
+def read_existing(path: Path) -> dict:
+    """An agenticops.yml to merge into, read with install.py's own reader (standard library only)."""
+    sys.path.insert(0, str(ROOT))
+    import install  # noqa: E402 - the stack's installer: its reader is the one that will read the result
+    try:
+        found = install.read_yaml(path)
+    except install.SiteError as exc:
+        fail(f"{path}: {exc}")
+    for old in ("access", "alerts"):
+        if old in found:
+            fail(f"{path} is from before platforms: (it has '{old}:'): generate it again without --merge")
+    return found
+
+
+def q(value) -> str:
+    return '"' + str(value).replace('"', '\\"') + '"'
+
+
+def platform_lines(name: str, spec: dict) -> list[str]:
+    lines = [f"  {name}:", f"    issuer: {q(spec['issuer'])}", f"    jwks_url: {q(spec['jwks_url'])}"]
+    audiences = spec.get("audiences") or ""
+    audiences = ",".join(audiences) if isinstance(audiences, list) else str(audiences)
+    lines.append(f"    audiences: {q(audiences)}")
+    lines.append(f"    default_scope: {spec.get('default_scope') or 'read'}")
+    if spec.get("clients"):
+        lines.append("    clients:")
+        lines += [f"      {cid}: {scope}" for cid, scope in sorted(spec["clients"].items())]
+    lines.append(f"    agent_claim: {spec.get('agent_claim') or 'azp'}")
+    if spec.get("alert_webhook"):
+        lines.append(f"    alert_webhook: {q(spec['alert_webhook'])}")
+    return lines
+
+
+def connection_file(args, issuer: str, jwks_url: str, audiences: list[str], existing: dict | None = None) -> str:
+    """agenticops.yml, in the block-style YAML install.py reads: this platform, plus (with --merge) the others and
+    the overlay of the existing file."""
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    existing = existing or {}
+    listed = dict(existing.get("platforms") or {})
+    listed[args.name] = {"issuer": issuer, "jwks_url": jwks_url, "audiences": audiences,
+                         "default_scope": args.default_scope, "clients": dict(args.client),
+                         "agent_claim": args.agent_claim, "alert_webhook": args.alert_webhook_url}
     lines = [
         f"# Generated {stamp} by scripts/ai-platform-connect.py on the platform's host.",
         "# Copy to the stack's directory as agenticops.yml (gitignored) and run",
-        "# python3 install.py --step 2 there. No secrets in this file.",
-        "access:",
-        f'  issuer: "{issuer}"',
-        f'  jwks_url: "{jwks_url}"',
-        f'  audiences: "{",".join(audiences)}"',
-        f"  default_scope: {args.default_scope}",
+        "# python3 install.py --step 2 there. No secrets in this file: each alert",
+        "# webhook's token is set there with python3 install.py --platform-token NAME.",
+        "platforms:",
     ]
-    if args.client:
-        lines.append("  clients:")
-        lines += [f"    {cid}: {scope}" for cid, scope in sorted(dict(args.client).items())]
-    lines.append(f"  agent_claim: {args.agent_claim}")
-    if args.alert_webhook_url:
-        lines += ["alerts:", f'  webhook: "{args.alert_webhook_url}"']
+    for name in sorted(listed):
+        lines += platform_lines(name, listed[name])
+    services = (existing.get("overlay") or {}).get("services") or {}
+    if services:
+        lines += ["overlay:", "  services:"]
+        for svc, spec in sorted(services.items()):
+            lines += [f"    {svc}:", f"      port: {spec.get('port')}", f"      protocol: {spec.get('protocol') or 'http'}"]
     return "\n".join(lines) + "\n"
 
 
@@ -181,6 +233,10 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stack-host", required=True,
                     help="the stack VM's address, as reachable from this machine")
+    ap.add_argument("--name", type=platform_name, default="agenticops",
+                    help="this platform's name in agenticops.yml and the stack's audit log (default: agenticops)")
+    ap.add_argument("--merge", type=Path, metavar="FILE",
+                    help="an existing agenticops.yml: keep its other platforms and its overlay, replace --name's")
     ap.add_argument("--idp", required=True,
                     help="the identity provider realm URL tokens are issued by, "
                          "e.g. http://localhost:7080/realms/<realm>")
@@ -198,7 +254,8 @@ def main() -> int:
                     help="what any other valid token may do (default: read)")
     ap.add_argument("--agent-claim", default="azp", help="the claim naming the calling agent (default: azp)")
     ap.add_argument("--alert-webhook-url", default="",
-                    help="where the stack also sends every alert (the platform's alert endpoint); omit for none")
+                    help="where the stack also sends every alert (the platform's alert endpoint, without any secret: "
+                         "its token is set on the stack with install.py --platform-token NAME); omit for none")
     ap.add_argument("--token-header", default="",
                     help="request header your ai-platform forwards the caller's token in, "
                          "for the MCP server snippet (see its credential-source docs)")
@@ -214,7 +271,7 @@ def main() -> int:
     config = discover(args.idp)
     issuer = config["issuer"]
     local_ip = args.jwks_host or address_towards(args.stack_host)
-    jwks_url = reachable_jwks(config["jwks_uri"], local_ip)
+    jwks_url = reachable_jwks(config["jwks_uri"], local_ip, always=bool(args.jwks_host))
 
     audiences = list(args.audience)
     if args.token_file:
@@ -233,10 +290,12 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     overlay = args.out / "agenticops.yml"
     snippet = args.out / "mcp-servers.snippet.yaml"
-    overlay.write_text(connection_file(args, issuer, jwks_url, audiences))
+    existing = read_existing(args.merge) if args.merge else None
+    overlay.write_text(connection_file(args, issuer, jwks_url, audiences, existing))
     overlay.chmod(0o600)
     snippet.write_text(mcp_snippet(args.stack_host, args.token_header or "<token-header>"))
 
+    print(f"platform   {args.name}" + (f" (merged into {args.merge})" if args.merge else ""))
     print(f"issuer     {issuer}")
     print(f"jwks_url   {jwks_url}   (as the stack will fetch it)")
     print(f"audiences  {','.join(audiences) or '(not checked)'}")
@@ -256,6 +315,9 @@ def main() -> int:
     if not args.token_header:
         print("     — set --token-header to fill in the header the ai-platform forwards tokens in")
     print(f"  4. from the stack VM, check it can fetch the keys:  curl -s {jwks_url}")
+    if args.alert_webhook_url:
+        print(f"  5. on the stack, the token the alert webhook expects (from stdin, never in a file there):")
+        print(f"     python3 install.py --platform-token {args.name}")
     return 0
 
 

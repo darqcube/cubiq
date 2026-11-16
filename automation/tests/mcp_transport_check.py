@@ -33,12 +33,22 @@ import common  # noqa: E402
 from servers import netmiko  # noqa: E402
 
 ISSUER = "http://idp.example/realms/demo"
+STAGING_ISSUER = "http://idp.staging.example/realms/demo"
 AUDIENCE = "ai-platform"
-KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-JWK = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(KEY.public_key()))
-JWK.update({"kid": "test-key", "use": "sig", "alg": "RS256"})
-# The verifier's key client fetches nothing: it is handed the JWKS directly.
-jwt.PyJWKClient.fetch_data = lambda self: {"keys": [JWK]}
+
+
+def keypair(kid: str):
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key()))
+    jwk.update({"kid": kid, "use": "sig", "alg": "RS256"})
+    return key, jwk
+
+
+# Two platforms, two identity providers, two keys. The key clients fetch nothing: each is handed its own JWKS.
+KEY, JWK = keypair("test-key")
+STAGING_KEY, STAGING_JWK = keypair("staging-key")
+JWKS = {"http://idp.example/jwks": [JWK], "http://idp.staging.example/jwks": [STAGING_JWK]}
+jwt.PyJWKClient.fetch_data = lambda self: {"keys": JWKS[self.uri]}
 
 HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -47,18 +57,28 @@ INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
 results: dict[str, list] = {}
 
 
-def token(azp="portal", **overrides) -> str:
+def token(azp="portal", key=None, kid="test-key", **overrides) -> str:
     claims = {"iss": ISSUER, "aud": AUDIENCE, "sub": "u-1", "preferred_username": "alice", "azp": azp,
               "exp": int(time.time()) + 300, "realm_access": {"roles": ["darqcube-write", "darqcube-approve"]}}
     claims.update(overrides)
-    return jwt.encode(claims, KEY, algorithm="RS256", headers={"kid": "test-key"})
+    return jwt.encode(claims, key or KEY, algorithm="RS256", headers={"kid": kid})
+
+
+def staging_token(azp="portal", **overrides) -> str:
+    return token(azp, key=STAGING_KEY, kid="staging-key", iss=STAGING_ISSUER, **overrides)
+
+
+def platforms(default_scope: str = "read") -> list:
+    return [common.Platform(name="lab", issuer=ISSUER, jwks_url="http://idp.example/jwks", audiences=(AUDIENCE,),
+                            default_scope=default_scope,
+                            clients={"platform-control": "execute", "platform-preprod": "read"}),
+            common.Platform(name="staging", issuer=STAGING_ISSUER, jwks_url="http://idp.staging.example/jwks",
+                            audiences=(AUDIENCE,), clients={"platform-control": "read"})]
 
 
 def verifier(mode: str, default_scope: str = "read") -> common.Verifier:
-    return common.Verifier(mode=mode, token="test-token", issuer=ISSUER, jwks_url="http://idp.example/jwks",
-                           audiences=[AUDIENCE], execute_token="exec-token",
-                           client_scopes={"platform-control": "execute", "platform-preprod": "read"},
-                           default_scope=default_scope)
+    return common.Verifier(mode=mode, token="test-token", platforms=platforms(default_scope),
+                           execute_token="exec-token")
 
 
 # One app for every mode: FastMCP's session manager can be started only once
@@ -161,6 +181,19 @@ def oidc_checks():
           lambda: (initialize(c, f"Bearer {token('platform-preprod')}").status_code == 200, ""))
 
 
+def platform_checks():
+    """Two platforms: a token's issuer picks one, that platform's keys check it, that platform's clients scope it."""
+    APP.verifier = verifier("oidc")
+    check("second_platform_valid_200", lambda: (initialize(c, f"Bearer {staging_token()}").status_code == 200, ""))
+    staged = call_push(c, f"Bearer {staging_token('platform-control')}")
+    check("the_same_client_has_each_platforms_own_scope", lambda: ("needs execute" in staged, staged))
+    forged = token("platform-control", iss=STAGING_ISSUER)   # the lab's key, the staging issuer
+    check("a_token_signed_by_another_platforms_key_is_refused",
+          lambda: (initialize(c, f"Bearer {forged}").status_code == 401, ""))
+    stranger = token(iss="http://idp.stranger.example/realms/x")
+    check("an_issuer_no_platform_has_is_refused", lambda: (initialize(c, f"Bearer {stranger}").status_code == 401, ""))
+
+
 def both_checks():
     APP.verifier = verifier("both")
     check("both_accepts_token", lambda: (initialize(c, "Bearer test-token").status_code == 200, ""))
@@ -176,18 +209,27 @@ def startup_checks():
             return True
         return False
     check("empty_token_refused_at_startup", lambda: (refuses(mode="token", token=""), ""))
-    check("oidc_without_issuer_refused_at_startup",
-          lambda: (refuses(mode="oidc", token="", issuer="", jwks_url=""), ""))
+    check("oidc_without_a_platform_refused_at_startup",
+          lambda: (refuses(mode="oidc", token="", platforms=[]), ""))
     check("unknown_mode_refused_at_startup", lambda: (refuses(mode="open", token="x"), ""))
     check("same_read_and_execute_token_refused_at_startup",
           lambda: (refuses(mode="token", token="same", execute_token="same"), ""))
-    def bad_scopes():
+    def refused(raw):
         try:
-            common.parse_client_scopes("platform-control=admin")
+            common.parse_platforms(raw)
         except SystemExit:
             return True
         return False
-    check("an_unknown_client_scope_is_refused_at_startup", lambda: (bad_scopes(), ""))
+    lab = {"name": "lab", "issuer": ISSUER, "jwks_url": "http://idp.example/jwks"}
+    check("an_unknown_client_scope_is_refused_at_startup",
+          lambda: (refused(json.dumps([{**lab, "clients": {"platform-control": "admin"}}])), ""))
+    check("a_default_scope_of_execute_is_refused_at_startup",
+          lambda: (refused(json.dumps([{**lab, "default_scope": "execute"}])), ""))
+    check("two_platforms_with_one_issuer_are_refused_at_startup",
+          lambda: (refused(json.dumps([lab, {**lab, "name": "staging"}])), ""))
+    check("platforms_that_are_not_json_are_refused_at_startup", lambda: (refused("lab=http://x"), ""))
+    check("the_platforms_line_install_writes_is_read",
+          lambda: (common.parse_platforms(json.dumps([lab]))[0].issuer == ISSUER, ""))
 
 
 def audit_checks():
@@ -211,9 +253,9 @@ def audit_checks():
     finally:
         audit.removeHandler(handler)
     line = next((r for r in records if "tool=commit_device_change" in r), "")
-    check("audit_names_user_scope_and_tool",
+    check("audit_names_user_platform_scope_and_tool",
           lambda: (line.startswith("audit ") and "user=alice" in line and "via=oidc" in line
-                   and "scope=execute" in line, records))
+                   and "platform=lab" in line and "scope=execute" in line, records))
     check("audit_omits_arguments", lambda: ("7f3a-c21e" not in " ".join(records), records))
 
 
@@ -227,7 +269,7 @@ def offload_checks():
 
 
 with TestClient(APP) as c:
-    for group in (host_checks, token_checks, oidc_checks, both_checks, startup_checks, audit_checks,
+    for group in (host_checks, token_checks, oidc_checks, platform_checks, both_checks, startup_checks, audit_checks,
                   offload_checks):
         try:
             group()

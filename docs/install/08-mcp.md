@@ -107,7 +107,7 @@ writes off, netmiko lists 2 tools; with writes on, 7.
 | 401 on every call | missing or wrong bearer credential — the shared token in `token` mode, a valid JWT from the configured issuer in `oidc` mode (`docker compose logs mcp-netmiko` says why) |
 | 421 Misdirected Request | the `Host` the client used is not allowed — set `ai_platform.publish` so `MCP_ALLOWED_HOSTS` names this host's address |
 | 406 / stream errors | add `Accept: application/json, text/event-stream` |
-| A server exits at start | `MCP_SERVER` is not one of the seven valid names, `MCP_AUTH_TOKEN` is empty, or `oidc` mode lacks `MCP_OIDC_ISSUER` / `MCP_OIDC_JWKS_URL` |
+| A server exits at start | `MCP_SERVER` is not one of the seven valid names, `MCP_AUTH_TOKEN` is empty, or `oidc` mode has no platform (`MCP_OIDC_PLATFORMS` empty: `agenticops.yml` `platforms:`, then `python3 install.py --step 2`) |
 | `mcp-netmiko` / `mcp-pyats` tools fail | the automation container is down — they front its API |
 | a change tool says the caller "needs execute" | the credential has the read scope: the read token, or a client not listed with `execute` in `agenticops.yml` — intended |
 | the change tools missing | `MCP_ALLOW_WRITE` is not `true` (this is the default, and intended) |

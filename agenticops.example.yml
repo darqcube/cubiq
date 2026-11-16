@@ -8,26 +8,41 @@
 #
 # No secrets in this file. docs/how-to/connect-an-ai-platform.md
 
-access:
-  # Who may call the MCP servers: tokens from this identity provider.
-  # Exactly the "iss" claim in its tokens.
-  issuer: https://idp.example/realms/main
-  # Its signing keys, as reachable FROM THIS MACHINE.
-  jwks_url: https://idp.example/realms/main/protocol/openid-connect/certs
-  # Accepted "aud" values, comma-separated. Empty = not checked.
-  audiences: cubiq
-  # What any valid token may do: read (the read tools) or none.
-  default_scope: read
-  # Machine clients by OIDC client id: read, or execute (stage, commit,
-  # rollback). Give execute to the platform's control service only.
-  clients:
-    platform-control: execute
-  # The claim naming the calling agent, for the audit log.
-  agent_claim: azp
+platforms:
+  # One entry per platform that may call this stack, by a name you choose
+  # (lower case, digits, '-'): it appears in the audit log and on every change.
+  # A token's issuer picks the platform, so each needs its own identity provider.
+  production:
+    # Exactly the "iss" claim in its tokens.
+    issuer: https://idp.example/realms/main
+    # Its signing keys, as reachable FROM THIS MACHINE.
+    jwks_url: https://idp.example/realms/main/protocol/openid-connect/certs
+    # Accepted "aud" values, comma-separated. Empty = not checked.
+    audiences: cubiq
+    # What any valid token may do: read (the read tools) or none.
+    default_scope: read
+    # Machine clients by OIDC client id: read, or execute (stage, commit,
+    # rollback). Give execute to the platform's control service only.
+    clients:
+      platform-control: execute
+    # The claim naming the calling agent, for the audit log.
+    agent_claim: azp
+    # Every alert is also sent here (besides site.yml's alerts.webhook_url),
+    # with the token the platform gave you as a Bearer header — the token is a
+    # secret, so never here: python3 install.py --platform-token production
+    alert_webhook: https://agenticops.example/alertmanager
 
-alerts:
-  # Every alert is also sent here (besides site.yml's alerts.webhook_url).
-  webhook: https://agenticops.example/internal/alerts
+  # A second platform, e.g. a staging copy of the same platform, connects the
+  # same way with its own identity provider. Two platforms that both have
+  # execute act on the same devices: give a staging copy read, and execute only
+  # for an agreed test window.
+  # staging:
+  #   issuer: https://idp.staging.example/realms/main
+  #   jwks_url: https://idp.staging.example/realms/main/protocol/openid-connect/certs
+  #   audiences: cubiq
+  #   clients:
+  #     platform-control: read
+  #   alert_webhook: https://agenticops.staging.example/alertmanager
 
 # overlay:
 #   # What this stack serves through an overlay network (names, local ports).

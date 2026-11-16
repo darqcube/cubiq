@@ -6,11 +6,12 @@
 #
 # EVERY ALERT GOES TO TWO RECEIVERS, and nothing here decides which alert matters to whom:
 #   notify    this stack's own receiver, ALERT_WEBHOOK_URL (site.yml alerts.webhook_url)
-#   platform  a connected platform's, PLATFORM_ALERT_WEBHOOK_URL (agenticops.yml alerts.webhook)
-# Which alerts start an investigation, or reach which people, is the platform's policy. Each delivery names its
-# receiver in the body ("receiver"). The URLs are read from files config-init writes (url_file), so neither this
-# template nor the generated config holds them; an empty one points at a local no-op, so the stack starts with no
-# external dependency.
+#   platform  every connected platform's, one webhook each (agenticops.yml platforms.<name>.alert_webhook), with
+#             that platform's token as a Bearer header (install.py --platform-token NAME)
+# Which alerts start an investigation, or reach which people, is each platform's policy. Each delivery names its
+# receiver in the body ("receiver"). URLs and tokens are read from files config-init writes (url_file,
+# credentials_file), so neither this template nor the generated config holds them. The stack's own receiver, when
+# empty, points at a local no-op; with no platform connected the platform receiver has no integration at all.
 route:
   receiver: notify
   group_by: [alertname, device]
@@ -32,9 +33,7 @@ receivers:
       - url_file: /etc/alertmanager/webhook-url
         send_resolved: true
   - name: platform
-    webhook_configs:
-      - url_file: /etc/alertmanager/platform-webhook-url
-        send_resolved: true
+    # PLATFORM_WEBHOOKS: config-init and make render insert generated/alertmanager-platforms.yml below this line.
 
 inhibit_rules:
   # A device that is unreachable will also have every interface "down". Report

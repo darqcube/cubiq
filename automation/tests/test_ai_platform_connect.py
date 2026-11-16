@@ -71,7 +71,8 @@ def test_uses_only_the_standard_library():
     imported = {n.names[0].name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import)}
     imported |= {n.module.split(".")[0] for n in ast.walk(tree)
                  if isinstance(n, ast.ImportFrom) and n.module and n.level == 0}
-    third_party = imported - set(sys.stdlib_module_names) - {"__future__"}
+    # install: the repository's own installer (standard library only too), whose reader reads what this writes.
+    third_party = imported - set(sys.stdlib_module_names) - {"__future__", "install"}
     assert not third_party, f"non-stdlib imports: {third_party}"
 
 
@@ -83,6 +84,11 @@ def test_uses_only_the_standard_library():
 ])
 def test_only_unreachable_key_hosts_are_rewritten(gen, uri, expected):
     assert gen.reachable_jwks(uri, "192.0.2.1") == expected
+
+
+def test_a_given_key_host_always_wins(gen):
+    """--jwks-host: a name only this machine resolves (e.g. a VM's .local name) is replaced too."""
+    assert gen.reachable_jwks("http://idp.vm.local:7080/r/certs", "192.0.2.9", always=True) == "http://192.0.2.9:7080/r/certs"
 
 
 def run(idp, tmp_path, *extra):
@@ -103,26 +109,62 @@ def test_end_to_end_output_is_what_install_accepts(gen, inst, idp, tmp_path):
     assert conn == yaml.safe_load(path.read_text()), "install.py reads it differently from YAML"
     assert not inst.validate_connection(conn), inst.validate_connection(conn)
 
-    access = conn["access"]
-    assert access["issuer"].startswith("http://localhost:"), "the issuer must stay as tokens carry it"
-    assert access["jwks_url"].startswith("http://192.0.2.1:"), "keys must be fetched from a reachable host"
-    assert access["clients"] == {"platform-control": "execute", "platform-preprod": "read"}
-    assert "alerts" not in conn, "written although not asked for"
+    platform = conn["platforms"]["agenticops"]
+    assert platform["issuer"].startswith("http://localhost:"), "the issuer must stay as tokens carry it"
+    assert platform["jwks_url"].startswith("http://192.0.2.1:"), "keys must be fetched from a reachable host"
+    assert platform["clients"] == {"platform-control": "execute", "platform-preprod": "read"}
+    assert "alert_webhook" not in platform, "written although not asked for"
     assert oct(path.stat().st_mode & 0o777) == "0o600"
 
     env = inst.ai_platform_env({}, "192.0.2.10", "13000", conn)
     assert env["MCP_AUTH_MODE"] == "oidc"
-    assert env["MCP_OIDC_CLIENT_SCOPES"] == "platform-control=execute,platform-preprod=read"
+    assert json.loads(env["MCP_OIDC_PLATFORMS"])[0]["clients"] == {"platform-control": "execute",
+                                                                   "platform-preprod": "read"}
     assert env["MCP_BIND_IP"] == "127.0.0.1", "publishing is the stack owner's (site.yml), not the connection's"
 
 
 def test_the_alert_receiver_is_written_when_given(gen, inst, idp, tmp_path):
-    out = run(idp, tmp_path, "--alert-webhook-url", "http://192.0.2.1:9100/alertmanager/s")
+    out = run(idp, tmp_path, "--name", "lab", "--alert-webhook-url", "http://192.0.2.1:9100/alertmanager")
     assert out.returncode == 0, out.stderr
     conn = inst.read_yaml(tmp_path / "agenticops.yml")
     assert not inst.validate_connection(conn), inst.validate_connection(conn)
-    assert conn["alerts"]["webhook"] == "http://192.0.2.1:9100/alertmanager/s"
-    assert inst.connection_env(conn)["PLATFORM_ALERT_WEBHOOK_URL"] == "http://192.0.2.1:9100/alertmanager/s"
+    assert conn["platforms"]["lab"]["alert_webhook"] == "http://192.0.2.1:9100/alertmanager"
+    assert inst.connection_env(conn)["PLATFORM_ALERT_WEBHOOKS"] == "lab=http://192.0.2.1:9100/alertmanager"
+    assert "--platform-token lab" in out.stdout, "the next steps say how the stack gets the webhook's token"
+
+
+def test_a_second_platform_is_merged_and_the_first_kept(inst, idp, tmp_path):
+    """Two platforms on two identity providers: here the same provider, so the second is told apart by a staging
+    realm name only in the file; what matters is the merge."""
+    first = tmp_path / "first"
+    assert run(idp, first, "--name", "lab", "--client", "platform-control=execute").returncode == 0
+    existing = first / "agenticops.yml"
+    existing.write_text(existing.read_text() + "overlay:\n  services:\n    infrahub:\n      port: 9001\n"
+                        "      protocol: http\n")
+    conn = inst.read_yaml(existing)
+    conn["platforms"]["lab"]["issuer"] = "http://idp.lab.example/realms/demo"   # a different provider
+    lines = ["platforms:", "  lab:"] + [f"    {k}: {json.dumps(v)}" for k, v in conn["platforms"]["lab"].items()
+                                        if not isinstance(v, dict)]
+    lines += ["    clients:", "      platform-control: execute",
+              "overlay:", "  services:", "    infrahub:", "      port: 9001", "      protocol: http"]
+    existing.write_text("\n".join(lines) + "\n")
+
+    second = tmp_path / "second"
+    out = run(idp, second, "--name", "staging", "--client", "platform-control=read", "--merge", str(existing))
+    assert out.returncode == 0, out.stderr
+    merged = inst.read_yaml(second / "agenticops.yml")
+    assert not inst.validate_connection(merged), inst.validate_connection(merged)
+    assert sorted(merged["platforms"]) == ["lab", "staging"]
+    assert merged["platforms"]["lab"]["clients"] == {"platform-control": "execute"}
+    assert merged["platforms"]["staging"]["clients"] == {"platform-control": "read"}
+    assert merged["overlay"]["services"]["infrahub"] == {"port": 9001, "protocol": "http"}
+
+
+def test_merging_an_old_file_is_refused(idp, tmp_path):
+    old = tmp_path / "old.yml"
+    old.write_text("access:\n  issuer: http://i\n")
+    out = run(idp, tmp_path / "out", "--merge", str(old))
+    assert out.returncode == 1 and "before platforms:" in out.stderr
 
 
 def test_a_bad_client_is_refused(idp, tmp_path):

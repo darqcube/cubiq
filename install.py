@@ -49,8 +49,9 @@ ENV = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 SITE = ROOT / "site.yml"
 SITE_EXAMPLE = ROOT / "site.example.yml"
-# The AgenticOps connection: who may call the MCP servers (access), where alerts
-# also go (alerts), and what is served through an overlay (overlay). Optional:
+# The AgenticOps connection: the platforms that may call the MCP servers, each
+# with its identity provider, its clients' scopes and its alert webhook
+# (platforms), and what is served through an overlay (overlay). Optional:
 # absent, the stack runs standalone. Generated on the platform's host by
 # scripts/ai-platform-connect.py, or written by hand. Gitignored: it names this
 # deployment's addresses. docs/how-to/connect-an-ai-platform.md
@@ -311,11 +312,11 @@ AI_PLATFORM_KEYS = {
 # Keys that left site.yml in 2.0.0, and where they went. Named, not just refused:
 # an upgrade should say what to do, and never carry a value forward silently.
 MOVED_KEYS = {
-    "ai_platform.auth.issuer": "agenticops.yml access.issuer",
-    "ai_platform.auth.jwks_url": "agenticops.yml access.jwks_url",
-    "ai_platform.auth.audiences": "agenticops.yml access.audiences",
-    "ai_platform.auth.agent_claim": "agenticops.yml access.agent_claim",
-    "ai_platform.alert_webhook_url": "agenticops.yml alerts.webhook (or alerts.webhook_url in site.yml)",
+    "ai_platform.auth.issuer": "agenticops.yml platforms.<name>.issuer",
+    "ai_platform.auth.jwks_url": "agenticops.yml platforms.<name>.jwks_url",
+    "ai_platform.auth.audiences": "agenticops.yml platforms.<name>.audiences",
+    "ai_platform.auth.agent_claim": "agenticops.yml platforms.<name>.agent_claim",
+    "ai_platform.alert_webhook_url": "agenticops.yml platforms.<name>.alert_webhook (or alerts.webhook_url in site.yml)",
     "ai_platform.alert_profile": "site.yml alerts.profile",
     # The guard left the stack in 2.0.0: approval, rights, windows, fresh sign-in, four eyes and management interfaces
     # are the connected platform's policy (AgenticOps's Control). The stack authenticates: read or execute.
@@ -330,20 +331,29 @@ MOVED_KEYS = {
                "the stack stages and commits once)",
 }
 
-# agenticops.yml: three sections, each optional.
+# agenticops.yml: two sections, each optional. platforms: one entry per connected platform, by a name you choose.
 CONNECTION_KEYS = {
-    "": {"access", "alerts", "overlay"},
-    "access": {"issuer", "jwks_url", "audiences", "default_scope", "clients", "agent_claim"},
-    "alerts": {"webhook"},
+    "": {"platforms", "overlay"},
     "overlay": {"services"},
 }
+PLATFORM_KEYS = {"issuer", "jwks_url", "audiences", "default_scope", "clients", "agent_claim", "alert_webhook"}
+# A platform's name: in the audit log, in file names, and in PLATFORM_ALERT_TOKENS.
+PLATFORM_NAME = re.compile(r"[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?")
+# A webhook token: no comma (PLATFORM_ALERT_TOKENS is comma-separated), no whitespace.
+WEBHOOK_TOKEN = re.compile(r"[A-Za-z0-9._~+/=-]{16,512}")
 SCOPES = ("read", "execute")
 DEFAULT_SCOPES = ("read", "none")
 OVERLAY_PROTOCOLS = ("http", "tcp")
 
+def platforms(connection: dict) -> dict:
+    """agenticops.yml's platforms, by name ({} when standalone)."""
+    found = connection.get("platforms") if isinstance(connection, dict) else None
+    return found if isinstance(found, dict) else {}
+
+
 def auth_mode(site: dict, connection: dict) -> str:
-    """ai_platform.auth.mode, defaulting to oidc when agenticops.yml gives access, token otherwise."""
-    default = "oidc" if connection.get("access") else "token"
+    """ai_platform.auth.mode, defaulting to oidc when agenticops.yml connects a platform, token otherwise."""
+    default = "oidc" if platforms(connection) else "token"
     return str(dig(site, "ai_platform.auth.mode", default) or default).strip().lower()
 
 
@@ -355,22 +365,32 @@ def csv(value) -> str:
 
 
 def connection_env(connection: dict) -> dict[str, str]:
-    """agenticops.yml -> .env: the identity provider, each client's scope, the platform's alert webhook.
+    """agenticops.yml -> .env: each platform's identity provider and clients' scopes, and its alert webhook.
 
-    Absent (an empty mapping) gives the standalone values: no issuer, no clients, no platform webhook.
+    MCP_OIDC_PLATFORMS is compact JSON (no spaces, sorted, so a re-run writes the same line); the MCP servers read
+    it. PLATFORM_ALERT_WEBHOOKS is name=url pairs; Alertmanager's config-init reads it. Absent (an empty mapping)
+    gives the standalone values: no platform, no platform webhook. The webhooks' tokens are secrets: never here,
+    set with install.py --platform-token NAME (PLATFORM_ALERT_TOKENS).
     """
-    access = connection.get("access") or {}
-    clients = access.get("clients") or {}
+    listed = []
+    hooks = []
+    for name, spec in sorted(platforms(connection).items()):
+        spec = spec or {}
+        listed.append({
+            "name": name,
+            "issuer": str(spec.get("issuer") or "").strip(),
+            "jwks_url": str(spec.get("jwks_url") or "").strip(),
+            "audiences": [a for a in csv(spec.get("audiences")).split(",") if a],
+            "default_scope": str(spec.get("default_scope") or "read").strip().lower(),
+            "clients": {str(cid): str(scope).strip().lower() for cid, scope in sorted((spec.get("clients") or {}).items())},
+            "agent_claim": str(spec.get("agent_claim") or "azp").strip(),
+        })
+        hook = str(spec.get("alert_webhook") or "").strip()
+        if hook:
+            hooks.append(f"{name}={hook}")
     return {
-        "MCP_OIDC_ISSUER": str(access.get("issuer") or "").strip(),
-        "MCP_OIDC_JWKS_URL": str(access.get("jwks_url") or "").strip(),
-        "MCP_OIDC_AUDIENCES": csv(access.get("audiences")),
-        "MCP_OIDC_DEFAULT_SCOPE": str(access.get("default_scope") or "read").strip().lower(),
-        # client id=scope pairs, sorted so a re-run writes the same line
-        "MCP_OIDC_CLIENT_SCOPES": ",".join(f"{cid}={str(scope).strip().lower()}"
-                                           for cid, scope in sorted(clients.items())),
-        "MCP_AGENT_CLAIM": str(access.get("agent_claim") or "azp").strip(),
-        "PLATFORM_ALERT_WEBHOOK_URL": str(dig(connection, "alerts.webhook", "") or "").strip(),
+        "MCP_OIDC_PLATFORMS": json.dumps(listed, separators=(",", ":")) if listed else "",
+        "PLATFORM_ALERT_WEBHOOKS": ",".join(hooks),
     }
 
 
@@ -391,29 +411,51 @@ def validate_connection(connection: dict, name: str = "agenticops.yml") -> list[
                 where = f"{name} {section}" if section else name
                 problems.append(f"unknown key '{key}' in {where} — expected one of {sorted(allowed)}")
 
-    access = connection.get("access") or {}
-    if isinstance(access, dict) and access:
+    for old in ("access", "alerts"):
+        if old in connection:
+            problems.append(f"{name}: '{old}:' became 'platforms: <name>:' — one entry per connected platform, with "
+                            f"issuer, jwks_url, audiences, default_scope, clients, agent_claim and alert_webhook "
+                            f"(regenerate it: scripts/ai-platform-connect.py)")
+    listed = connection.get("platforms")
+    if listed not in (None, "", {}) and not isinstance(listed, dict):
+        problems.append(f"{name}: platforms must map each platform's name to its settings")
+        listed = {}
+    issuers: dict[str, str] = {}
+    for pname, spec in (listed or {}).items():
+        where = f"{name}: platforms.{pname}"
+        if not PLATFORM_NAME.fullmatch(str(pname)):
+            problems.append(f"{where} — a platform's name is lower case, digits and '-' (up to 32), e.g. 'production'")
+        if not isinstance(spec, dict):
+            problems.append(f"{where} needs issuer and jwks_url")
+            continue
+        for key in spec:
+            if key not in PLATFORM_KEYS:
+                problems.append(f"unknown key '{key}' in {where} — expected one of {sorted(PLATFORM_KEYS)}")
         for field in ("issuer", "jwks_url"):
-            if not re.match(r"^https?://\S+$", str(access.get(field) or "")):
-                problems.append(f"{name}: access.{field} is required — an http(s) URL "
+            if not re.match(r"^https?://\S+$", str(spec.get(field) or "")):
+                problems.append(f"{where}.{field} is required — an http(s) URL "
                                 f"(generate the file on the platform's host: scripts/ai-platform-connect.py)")
-        default = str(access.get("default_scope") or "read").strip().lower()
+        issuer = str(spec.get("issuer") or "").strip()
+        if issuer and issuer in issuers:
+            problems.append(f"{where}.issuer is also platforms.{issuers[issuer]}'s: a token's issuer must name "
+                            f"exactly one platform")
+        issuers.setdefault(issuer, str(pname))
+        default = str(spec.get("default_scope") or "read").strip().lower()
         if default not in DEFAULT_SCOPES:
-            problems.append(f"{name}: access.default_scope '{default}' — expected one of {', '.join(DEFAULT_SCOPES)} "
+            problems.append(f"{where}.default_scope '{default}' — expected one of {', '.join(DEFAULT_SCOPES)} "
                             "(execute is given to named clients only)")
-        clients = access.get("clients") or {}
+        clients = spec.get("clients") or {}
         if not isinstance(clients, dict):
-            problems.append(f"{name}: access.clients must map each client id to its scope, e.g. 'platform-control: execute'")
+            problems.append(f"{where}.clients must map each client id to its scope, e.g. 'platform-control: execute'")
         else:
             for cid, scope in clients.items():
                 if not re.fullmatch(r"[A-Za-z0-9._:-]+", str(cid)):
-                    problems.append(f"{name}: access.clients '{cid}' is not a client id")
+                    problems.append(f"{where}.clients '{cid}' is not a client id")
                 if str(scope).strip().lower() not in SCOPES:
-                    problems.append(f"{name}: access.clients.{cid} '{scope}' — expected one of {', '.join(SCOPES)}")
-
-    hook = str(dig(connection, "alerts.webhook", "") or "")
-    if hook and not re.match(r"^https?://\S+$", hook):
-        problems.append(f"{name}: alerts.webhook must be an http(s) URL, or empty")
+                    problems.append(f"{where}.clients.{cid} '{scope}' — expected one of {', '.join(SCOPES)}")
+        hook = str(spec.get("alert_webhook") or "")
+        if hook and not re.match(r"^https?://[^\s,]+$", hook):
+            problems.append(f"{where}.alert_webhook must be an http(s) URL (no comma), or empty")
 
     services = dig(connection, "overlay.services", {}) or {}
     if not isinstance(services, dict):
@@ -555,12 +597,12 @@ def validate_ai_platform(site: dict, connection: dict | None = None) -> list[str
     mode = auth_mode(site, connection)
     if mode not in AUTH_MODES:
         problems.append(f"ai_platform.auth.mode '{mode}' — expected one of {', '.join(AUTH_MODES)}")
-    elif mode in ("oidc", "both") and not connection.get("access"):
-        problems.append(f"ai_platform.auth.mode {mode} needs agenticops.yml with an access: section "
-                        "(the identity provider and its clients) — or mode token")
-    elif mode == "token" and connection.get("access"):
-        problems.append("agenticops.yml gives access, but ai_platform.auth.mode is token, which would ignore it — "
-                        "set mode oidc (or both), or remove the mode line")
+    elif mode in ("oidc", "both") and not platforms(connection):
+        problems.append(f"ai_platform.auth.mode {mode} needs agenticops.yml with a platforms: entry "
+                        "(an identity provider and its clients) — or mode token")
+    elif mode == "token" and platforms(connection):
+        problems.append("agenticops.yml connects a platform, but ai_platform.auth.mode is token, which would ignore "
+                        "it — set mode oidc (or both), or remove the mode line")
 
     try:
         kb = as_int(dig(site, "ai_platform.max_response_kb"), "ai_platform.max_response_kb", 512)
@@ -638,8 +680,8 @@ def site_to_env(site: dict, connection: dict | None = None) -> dict[str, str]:
     for name, var in PORT_VARS.items():
         env[var] = str(as_int(overrides.get(name), f"ports.overrides.{name}", chosen[name]))
 
-    # The stack's own alert receiver. A connected platform's is agenticops.yml's
-    # alerts.webhook (PLATFORM_ALERT_WEBHOOK_URL): the two are separate.
+    # The stack's own alert receiver. Connected platforms' are agenticops.yml's
+    # platforms.<name>.alert_webhook (PLATFORM_ALERT_WEBHOOKS): separate.
     env["ALERT_WEBHOOK_URL"] = str(dig(site, "alerts.webhook_url", "") or "")
 
     profiles = ["devices", "automation"]
@@ -1027,8 +1069,8 @@ def configure(args) -> None:
 
     if OLD_OVERLAY.exists():
         bad(f"{OLD_OVERLAY.relative_to(ROOT)} is the 1.x connection file and is no longer read. Since 2.0.0 the "
-            f"connection lives in {CONNECTION.name}: issuer, jwks_url and audiences go under access:, the alert "
-            f"webhook under alerts:, publish/graphs/max_response_kb stay in site.yml's ai_platform:, and the "
+            f"connection lives in {CONNECTION.name}: issuer, jwks_url, audiences and the alert webhook go under "
+            f"platforms: <name>:, publish/graphs/max_response_kb stay in site.yml's ai_platform:, and the "
             f"change rights moved to the platform. Regenerate it with scripts/ai-platform-connect.py, then delete "
             f"{OLD_OVERLAY.relative_to(ROOT)}. docs/how-to/connect-an-ai-platform.md")
         return
@@ -1083,11 +1125,44 @@ def apply_connection_to_env(path: Path) -> None:
         return
     current = read_env(ENV)
     values = {**connection_env(connection), "CUBIQ_VERSION": cubiq_version()}
-    if connection.get("access") and current.get("MCP_AUTH_MODE", "token") == "token":
+    if platforms(connection) and current.get("MCP_AUTH_MODE", "token") == "token":
         values["MCP_AUTH_MODE"] = "oidc"
     ENV.write_text(set_env_values(ENV.read_text(), values))
     os.chmod(ENV, 0o600)
     report_connection({**current, **values}, path.name)
+
+
+def platform_tokens(raw: str) -> dict[str, str]:
+    """PLATFORM_ALERT_TOKENS: name=token pairs, comma-separated (secrets: never printed)."""
+    return dict(p.split("=", 1) for p in (raw or "").split(",") if "=" in p and p.split("=", 1)[0])
+
+
+def set_platform_token(name: str) -> int:
+    """install.py --platform-token NAME: the token a platform's alert webhook expects (Authorization: Bearer), read on
+    standard input (a pipe, or typed with no echo), kept in .env (0600) and nowhere else. Empty input removes it. A secret
+    never goes in agenticops.yml: the platform's side sends it over SSH's stdin, so it is never in a file or a shell
+    history there either."""
+    if not PLATFORM_NAME.fullmatch(name):
+        bad(f"--platform-token {name!r}: a platform's name, as in agenticops.yml platforms:")
+        return 2
+    if not ENV.exists():
+        bad(f"no {ENV.name} yet — run python3 install.py first")
+        return 2
+    token = (getpass.getpass(f"Alert webhook token for {name} (empty removes it): ") if sys.stdin.isatty()
+             else sys.stdin.readline()).strip()
+    if token and not WEBHOOK_TOKEN.fullmatch(token):
+        bad("the token must be 16 to 512 characters of letters, digits and ._~+/=- (no comma, no space)")
+        return 2
+    tokens = platform_tokens(read_env(ENV).get("PLATFORM_ALERT_TOKENS", ""))
+    tokens.pop(name, None)
+    if token:
+        tokens[name] = token
+    ENV.write_text(set_env_values(ENV.read_text(), {"PLATFORM_ALERT_TOKENS": ",".join(
+        f"{k}={v}" for k, v in sorted(tokens.items()))}))
+    os.chmod(ENV, 0o600)
+    ok(f"{name}'s alert webhook token {'saved' if token else 'removed'} in {ENV.name} (not shown) — "
+       f"apply: docker compose up -d --force-recreate config-init alertmanager")
+    return 0
 
 
 def report_connection(values: dict[str, str], source: str | None) -> None:
@@ -1098,9 +1173,17 @@ def report_connection(values: dict[str, str], source: str | None) -> None:
     if not source:
         info(f"no {CONNECTION.name}: standalone (no platform connected)")
         return
-    clients = values.get("MCP_OIDC_CLIENT_SCOPES") or "none"
-    ok(f"connection applied from {source}: clients {clients}"
-       + (" · alerts to the platform" if values.get("PLATFORM_ALERT_WEBHOOK_URL") else ""))
+    try:
+        listed = json.loads(values.get("MCP_OIDC_PLATFORMS") or "[]")
+    except ValueError:
+        listed = []
+    hooks = dict(p.split("=", 1) for p in (values.get("PLATFORM_ALERT_WEBHOOKS") or "").split(",") if "=" in p)
+    tokens = platform_tokens(values.get("PLATFORM_ALERT_TOKENS", ""))
+    for p in listed:
+        clients = ", ".join(f"{c} {s}" for c, s in p.get("clients", {}).items()) or "no named clients"
+        alerts = ("alerts with a token" if p["name"] in tokens else "alerts WITHOUT a token: "
+                  f"python3 install.py --platform-token {p['name']}") if p["name"] in hooks else "no alerts"
+        ok(f"platform {p['name']} from {source}: {clients} · {alerts}")
     info("apply: make mcp-apply" + (" && make up   (starts the graph renderer)"
                                     if values.get("MCP_GRAPHS_ENABLED") == "true" else ""))
 
@@ -1408,8 +1491,12 @@ def main() -> int:
     ap.add_argument("--step", type=int, metavar="N", help="run step N only (1-7)")
     ap.add_argument("--agenticops", metavar="FILE",
                     help=f"apply a connection file (default: ./{CONNECTION.name} if present; absent: standalone)")
+    ap.add_argument("--platform-token", metavar="NAME",
+                    help="set the token platform NAME's alert webhook expects (standard input), and stop")
     ap.add_argument("--ai-platform", dest="old_ai_platform", metavar="FILE", help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.platform_token:
+        return set_platform_token(args.platform_token)
     if args.old_ai_platform:
         ap.error(f"--ai-platform is the 1.x option: since 2.0.0 the connection is {CONNECTION.name} "
                  f"(--agenticops FILE). docs/how-to/connect-an-ai-platform.md")

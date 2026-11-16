@@ -126,7 +126,7 @@ class Store:
                 "config_digest": digest, "fingerprint": policy.fingerprint(device, lines, rollback, digest),
                 "already_present": policy.already_present(config, lines), "state": STAGED,
                 "source": source[:64], "requester": user, "requester_sub": actor.get("sub"),
-                "requester_agent": agent, "staged_at": now,
+                "requester_agent": agent, "requester_platform": actor.get("platform"), "staged_at": now,
             }
             self._db.execute("INSERT INTO changes (id, state, staged_at, data) VALUES (?, ?, ?, ?)",
                              (change["id"], STAGED, now, json.dumps(change)))

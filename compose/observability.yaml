@@ -30,7 +30,8 @@ services:
       com.darqcube.role: backend
     environment:
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
-      PLATFORM_ALERT_WEBHOOK_URL: ${PLATFORM_ALERT_WEBHOOK_URL:-}
+      PLATFORM_ALERT_WEBHOOKS: ${PLATFORM_ALERT_WEBHOOKS:-}
+      PLATFORM_ALERT_TOKENS: ${PLATFORM_ALERT_TOKENS:-}
     volumes:
       - ../observability/alertmanager/alertmanager.yml.tmpl:/src/alertmanager.yml.tmpl:ro
       - alertmanager-config:/out
@@ -51,18 +52,41 @@ services:
         fi
         printf '%s' "$$url" > /out/webhook-url
         chmod 0644 /out/webhook-url
-        platform="${PLATFORM_ALERT_WEBHOOK_URL:-}"
-        if [ -z "$$platform" ]; then
-          platform="http://alertmanager:9093/-/ready"
-          echo "No platform connected (agenticops.yml alerts.webhook) — standalone."
+        # One webhook per connected platform (agenticops.yml platforms.<name>.alert_webhook) under the platform
+        # receiver: its URL and token each in a file of their own here (read from this container's environment,
+        # never pasted into this script), and the receiver's entries, which only name those files, in
+        # generated/alertmanager-platforms.yml, which make render inserts too. No platform: the receiver has no
+        # integration and Alertmanager sends nothing.
+        rm -f /out/platform-webhook-url /out/platform-*-url /out/platform-*-token
+        : > /tmp/platform-webhooks
+        for pair in $$(printf '%s' "$$PLATFORM_ALERT_WEBHOOKS" | tr ',' ' '); do
+          name="$${pair%%=*}"; hook="$${pair#*=}"
+          case "$$name" in ''|*[!a-z0-9-]*) echo "skipped a webhook whose platform name is not valid"; continue;; esac
+          printf '%s' "$$hook" > "/out/platform-$$name-url"
+          printf '      - url_file: /etc/alertmanager/platform-%s-url\n        send_resolved: true\n' "$$name" >> /tmp/platform-webhooks
+          token=""
+          for t in $$(printf '%s' "$$PLATFORM_ALERT_TOKENS" | tr ',' ' '); do
+            if [ "$${t%%=*}" = "$$name" ]; then token="$${t#*=}"; fi
+          done
+          if [ -n "$$token" ]; then
+            printf '%s' "$$token" > "/out/platform-$$name-token"
+            printf '        http_config:\n          authorization:\n            credentials_file: /etc/alertmanager/platform-%s-token\n' "$$name" >> /tmp/platform-webhooks
+            echo "Alerts will also be delivered to platform $$name: $$hook (with its token)"
+          else
+            echo "Alerts will also be delivered to platform $$name: $$hook (no token: python3 install.py --platform-token $$name)"
+          fi
+        done
+        chmod 0644 /out/platform-*-url /out/platform-*-token 2>/dev/null || true
+        if [ -s /tmp/platform-webhooks ]; then
+          { echo '    webhook_configs:'; cat /tmp/platform-webhooks; } > /generated/alertmanager-platforms.yml
         else
-          echo "Alerts will also be delivered to the connected platform: $$platform"
+          echo "No platform connected (agenticops.yml platforms:) — standalone."
+          : > /generated/alertmanager-platforms.yml
         fi
-        printf '%s' "$$platform" > /out/platform-webhook-url
-        chmod 0644 /out/platform-webhook-url
-        # The config itself: the template, on every start (nothing in it is per install), so an upgrade's new
-        # routing takes effect at the next `make up` without a render.
-        cp /src/alertmanager.yml.tmpl /generated/alertmanager.yml
+        chmod 0644 /generated/alertmanager-platforms.yml
+        # The config itself: the template, on every start, so an upgrade's new routing takes effect at the next
+        # `make up` without a render.
+        sed '/# PLATFORM_WEBHOOKS/r /generated/alertmanager-platforms.yml' /src/alertmanager.yml.tmpl > /generated/alertmanager.yml
         chmod 0644 /generated/alertmanager.yml
 
         for f in devices.json devices.yml; do
