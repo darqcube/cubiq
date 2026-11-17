@@ -58,6 +58,14 @@ windows, four eyes, management interfaces and alert routing are the connected pl
   `--merge FILE` adds a platform to an existing file, keeping the others; an explicit `--jwks-host` always wins), and
   names where each 1.x option went.
 - `docs/how-to/connect-an-ai-platform.md` is the guide for connecting AgenticOps directly, without Octelium.
+- **Alerts in seconds from the device's own syslog line.** Logstash raises `InterfaceDown`, `BGPPeerDown` and
+  `OSPFNeighborDown` the moment the router logs the link or neighbour down (`%LINEPROTO-5-UPDOWN`, `%BGP-5-ADJCHANGE`,
+  `%OSPF-5-ADJCHG`; IOS and IOS-XE), with the polled alerts' labels plus `source=syslog`, straight to Alertmanager's
+  API; the "up" line resolves it. Their own route sends them to the platforms with no group wait, one group per link
+  or neighbour. Polling found a link down about 2¼ minutes after it happened (a poll every 30 s, then the rule's
+  `for`): now about a second. The polled alerts stay as confirmation and backstop. Not alerted, as the polled rules:
+  an interface an administrator shut, a BGP neighbour shut or deleted in the configuration. Interface names are
+  shortened as SNMP's `ifName` (Ethernet0/1 -> Et0/1). `ALERTMANAGER_URL` (default `http://alertmanager:9093`).
 
 ### Fixes
 - **No duplicate series when a device's name request times out.** Every SNMP table (interfaces, BGP, OSPF, IP SLA,

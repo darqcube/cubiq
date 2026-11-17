@@ -276,3 +276,90 @@ def test_zoneless_timestamp_keeps_arrival_time(parsed):
     e = parsed["mt-01"]
     assert "clock_skew" not in e.get("tags", [])
     assert _age_minutes(e) < 5
+
+
+# --- Alerts in seconds (step 4b): the router's own line raises the polled alerts' twins at once ---
+
+def _alert_lines() -> str:
+    import datetime as dt
+    t0 = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=30)
+    def at(i: int, host: str, text: str) -> str:
+        t = t0 + dt.timedelta(seconds=i)
+        return f"<189>{300 + i}: {host}: *{t.strftime('%b %d %H:%M:%S')}.000 UTC: {text}\n"
+    return "".join([
+        at(0, "router1", "%LINEPROTO-5-UPDOWN: Line protocol on Interface Ethernet0/1, changed state to down"),
+        at(1, "router1", "%LINEPROTO-5-UPDOWN: Line protocol on Interface Ethernet0/1, changed state to up"),
+        at(2, "router1", "%LINK-5-CHANGED: Interface GigabitEthernet0/2, changed state to administratively down"),
+        at(3, "router1", "%LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/2, changed state to down"),
+        at(4, "router1", "%BGP-5-ADJCHANGE: neighbor 192.0.2.10 Down Peer closed the session"),
+        at(5, "router1", "%BGP-5-ADJCHANGE: neighbor *192.0.2.11 Down Admin. shutdown"),
+        at(6, "router1", "%BGP-5-ADJCHANGE: neighbor 192.0.2.10 Up "),
+        at(7, "router1", "%OSPF-5-ADJCHG: Process 1, Nbr 192.0.2.1 on Ethernet0/3 from FULL to DOWN, Neighbor Down: Dead timer expired"),
+        at(8, "router1", "%OSPF-5-ADJCHG: Process 1, Nbr 192.0.2.1 on Ethernet0/3 from LOADING to FULL, Loading Done"),
+        at(9, "stranger", "%LINEPROTO-5-UPDOWN: Line protocol on Interface Ethernet0/1, changed state to down"),
+    ])
+
+
+@pytest.fixture(scope="module")
+def alerts(tmp_path_factory):
+    """The real filter block over link, BGP and OSPF lines, one worker (their order matters): the alerts, in order."""
+    if not _image_exists():
+        pytest.skip(f"{IMAGE} not built — run: docker compose build logstash")
+    work = tmp_path_factory.mktemp("alerts")
+    (work / "pipeline").mkdir()
+    for d in (work, work / "pipeline"):
+        d.chmod(0o755)
+    src = PIPELINE.read_text()
+    (work / "pipeline/test.conf").write_text("input { stdin { codec => line } }\n"
+                                             + src[src.index("filter {"): src.index("output {")]
+                                             + "output { stdout { codec => json_lines } }\n")
+    (work / "devices.yml").write_text("router1: router1|hq|core|ios_xe\n")
+    result = subprocess.run(
+        ["docker", "run", "--rm", "-i", "-v", f"{work / 'pipeline'}:/usr/share/logstash/pipeline:ro",
+         "-v", f"{PATTERNS}:/usr/share/logstash/patterns:ro", "-v", f"{work}:/usr/share/logstash/lookup:ro",
+         "-e", "LS_JAVA_OPTS=-Xms512m -Xmx512m", "-e", "PIPELINE_WORKERS=1", IMAGE, "logstash"],
+        input=_alert_lines(), capture_output=True, text=True, timeout=300)
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+    assert len(events) == 10, f"logstash: {(result.stdout + result.stderr)[-2000:]}"
+    events.sort(key=lambda e: e.get("seq", 0) if isinstance(e.get("seq"), int) else e.get("@timestamp", ""))
+    return [(json.loads(e["alert_body"])[0], e["alert_state"]) if e.get("alert_body") else None for e in events]
+
+
+def test_a_link_down_line_raises_interface_down_at_once_and_its_up_line_resolves_it(alerts):
+    (down, state), (up, up_state) = alerts[0], alerts[1]
+    assert state == "firing" and up_state == "resolved"
+    assert down["labels"] == {"alertname": "InterfaceDown", "device": "router1", "ifName": "Et0/1",
+                              "severity": "warning", "source": "syslog"}, "the polled alert's labels, ifName short"
+    assert up["labels"] == down["labels"], "the same labels: Alertmanager resolves the same alert"
+    assert down["endsAt"] > down["startsAt"] and up["endsAt"] == up["startsAt"]
+    assert "%LINEPROTO-5-UPDOWN" in down["annotations"]["description"]
+
+
+def test_an_interface_an_administrator_shut_raises_nothing(alerts):
+    assert alerts[2] is None and alerts[3] is None
+
+
+def test_bgp_down_raises_bgp_peer_down_and_an_admin_shutdown_does_not(alerts):
+    (down, state), (up, up_state) = alerts[4], alerts[6]
+    assert state == "firing" and down["labels"]["alertname"] == "BGPPeerDown"
+    assert down["labels"]["peer"] == "192.0.2.10" and down["labels"]["severity"] == "critical"
+    assert alerts[5] is None, "neighbour shut in the configuration"
+    assert up_state == "resolved" and up["labels"] == down["labels"]
+
+
+def test_ospf_down_raises_ospf_neighbor_down_and_full_resolves_it(alerts):
+    (down, state), (up, up_state) = alerts[7], alerts[8]
+    assert state == "firing" and down["labels"] == {"alertname": "OSPFNeighborDown", "device": "router1",
+                                                    "router_id": "192.0.2.1", "ifName": "Et0/3",
+                                                    "severity": "critical", "source": "syslog"}
+    assert up_state == "resolved" and up["labels"] == down["labels"]
+
+
+def test_a_device_not_in_the_source_of_truth_raises_nothing(alerts):
+    assert alerts[9] is None
+
+
+def test_the_alerts_go_straight_to_alertmanager():
+    out = PIPELINE.read_text()
+    out = out[out.index("output {"):]
+    assert "if [alert_body]" in out and "/api/v2/alerts" in out and "ALERTMANAGER_URL" in out

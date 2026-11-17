@@ -4,7 +4,8 @@
 # observability/telegraf/generated/alertmanager.yml; `make render` also reloads Alertmanager. Edit this file, not the
 # generated copy.
 #
-# EVERY ALERT GOES TO TWO RECEIVERS, and nothing here decides which alert matters to whom:
+# EVERY ALERT GOES TO TWO RECEIVERS, and nothing here decides which alert matters to whom (alerts from syslog, the
+# fast path, go to the platforms without waiting: their own route below):
 #   notify    this stack's own receiver, ALERT_WEBHOOK_URL (site.yml alerts.webhook_url)
 #   platform  every connected platform's, one webhook each (agenticops.yml platforms.<name>.alert_webhook), with
 #             that platform's token as a Bearer header (install.py --platform-token NAME)
@@ -22,6 +23,14 @@ route:
     # Every alert to the platform; continue, so each also reaches the stack's own receiver below.
     - receiver: platform
       continue: true
+      routes:
+        # Alerts from the device's own syslog line (Logstash, source=syslog): seconds matter, so no group wait, one
+        # group per link or neighbour (a second link down is its own notification, not 5 minutes behind the first),
+        # and its "up" line's resolve sent within 10 s. Polled alerts keep the grouping above.
+        - matchers: [source="syslog"]
+          group_by: [alertname, device, ifName, peer, router_id]
+          group_wait: 0s
+          group_interval: 10s
     - matchers: [severity="critical"]
       receiver: notify
       repeat_interval: 1h

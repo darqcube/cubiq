@@ -1049,7 +1049,12 @@ def test_every_alert_goes_to_both_receivers_whatever_the_device_says(monkeypatch
     text = (tmp_path / "alertmanager.yml").read_text()
     config = yaml.safe_load(text)
     assert {r["name"] for r in config["receivers"]} == {"notify", "platform"}
-    assert config["route"]["routes"][0] == {"receiver": "platform", "continue": True}
+    platform = config["route"]["routes"][0]
+    assert (platform["receiver"], platform["continue"]) == ("platform", True)
+    # The device's own syslog line (source=syslog) goes to the platforms at once, one group per link or neighbour.
+    assert platform["routes"] == [{"matchers": ['source="syslog"'], "group_by": ["alertname", "device", "ifName", "peer",
+                                                                                 "router_id"],
+                                   "group_wait": "0s", "group_interval": "10s"}]
     assert "investigate" not in text and 'device="router1"' not in text
     assert text == mod.HEADER + (ROOT / "observability/alertmanager/alertmanager.yml.tmpl").read_text()
 

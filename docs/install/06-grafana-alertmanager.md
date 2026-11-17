@@ -86,6 +86,23 @@ Alerts group by `alertname` and `device`. One inhibit rule matters: a
 `DeviceUnreachable` alert suppresses `InterfaceDown` for the same device — you
 get the cause, not a hundred symptoms.
 
+### Alerts in seconds (syslog)
+
+A router logs a link or neighbour going down the second it happens; polling
+notices it a poll later and its rule waits (`for`) so a flap pages nobody:
+about 2¼ minutes in all. So Logstash also raises `InterfaceDown`,
+`BGPPeerDown` and `OSPFNeighborDown` from the line itself
+(`%LINEPROTO-5-UPDOWN`, `%BGP-5-ADJCHANGE`, `%OSPF-5-ADJCHG`), labelled
+`source=syslog`, straight to Alertmanager's API; the "up" line resolves it.
+Their route sends them to the platforms at once (`group_wait: 0s`, one group
+per link or neighbour). The polled alerts stay, as confirmation and for what
+syslog misses. Nothing is raised for an interface an administrator shut, or a
+BGP neighbour shut or deleted in the configuration. Whether to act on the
+first signal or wait for a flap is the receiving platform's policy.
+
+Check it: shut a link's far end and watch Alertmanager
+(`curl -s localhost:9093/api/v2/alerts | grep syslog`) within a second or two.
+
 ### Verify
 
 ```bash
