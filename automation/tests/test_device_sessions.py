@@ -178,7 +178,7 @@ def test_concurrent_reads_on_one_device_are_serialised(stub, monkeypatch):
     guard = threading.Lock()
     original = tasks._get_state
 
-    def watched(device, nr, command, raw, own):
+    def watched(device, nr, command, raw, own, view=None):
         with guard:
             active["n"] += 1
             if active["n"] > 1:
@@ -186,7 +186,7 @@ def test_concurrent_reads_on_one_device_are_serialised(stub, monkeypatch):
         try:
             import time as _t
             _t.sleep(0.02)          # widen the window a real command would occupy
-            return original(device, nr, command, raw, own)
+            return original(device, nr, command, raw, own, view=view)
         finally:
             with guard:
                 active["n"] -= 1
@@ -223,13 +223,13 @@ def test_different_devices_still_run_in_parallel(stub, monkeypatch):
     guard = threading.Lock()
     original = tasks._get_state
 
-    def watched(device, nr, command, raw, own):
+    def watched(device, nr, command, raw, own, view=None):
         with guard:
             peak["cur"] += 1
             peak["n"] = max(peak["n"], peak["cur"])
         try:
             _t.sleep(0.05)
-            return original(device, nr, command, raw, own)
+            return original(device, nr, command, raw, own, view=view)
         finally:
             with guard:
                 peak["cur"] -= 1
@@ -297,3 +297,27 @@ def test_inventory_mappings_are_valid_for_the_schema():
             assert m in attrs | rels, f"{m!r} is not a Device attribute or relationship"
         else:
             assert len(parts) == 2 and parts[0] in rels, f"{m!r}: a dotted mapping must start with a relationship"
+
+
+def test_a_view_runs_the_platforms_fixed_command_and_an_empty_answer_is_no_rows(stub, monkeypatch):
+    """get_device_state(view=bgp|ospf): never a command a caller sends; no neighbours is an answer, not a parse gap."""
+    monkeypatch.setattr(tasks, "platforms", lambda: {"ios_xe": {
+        "netmiko_type": "cisco_xe", "textfsm_platform": "cisco_ios", "show_run": "show running-config",
+        "state_cmd": "show ip interface brief",
+        "state_views": {"bgp": "show ip bgp summary", "ospf": "show ip ospf neighbor"}}})
+    sent = []
+    original_run = FakeNornir.run
+
+    def run(self, task=None, **kw):
+        sent.append(kw.get("command_string"))
+        if kw.get("command_string") == "show ip ospf neighbor":
+            return FakeResult("")
+        return original_run(self, task, **kw)
+    monkeypatch.setattr(FakeNornir, "run", run)
+    out = tasks.get_state("router1", view="ospf")
+    assert sent == ["show ip ospf neighbor"] and out["rows"] == [] and out["view"] == "ospf"
+
+
+def test_a_view_the_platform_lacks_is_refused(stub):
+    with pytest.raises(tasks.DeviceError, match="no bgp view"):
+        tasks.get_state("router1", view="bgp")

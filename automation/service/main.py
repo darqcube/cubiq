@@ -111,6 +111,7 @@ def device_state(
     device: str,
     command: str | None = Query(None, description="Override the platform's default state command"),
     raw: bool = Query(False, description="Return unparsed CLI output"),
+    view: str | None = Query(None, pattern="^(bgp|ospf)$", description="bgp or ospf: the platform's fixed command"),
 ):
     """Operational state, parsed into rows by TextFSM.
 
@@ -119,7 +120,7 @@ def device_state(
     """
     check_device_name(device)
     try:
-        return tasks.get_state(device, command=command, raw=raw)
+        return tasks.get_state(device, command=None if view else command, raw=raw, view=view)
     except tasks.DeviceError as exc:
         raise HTTPException(404, str(exc)) from exc
     except textfsm_parse.ParseError as exc:

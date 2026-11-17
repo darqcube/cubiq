@@ -65,6 +65,11 @@ ios_xe:
   gnmi_port: 57400
   show_run: show running-config
   state_cmd: show ip interface brief
+  # get_device_state(view=…): a fixed read-only command per view, never one a caller sends. An empty answer is "no
+  # neighbours" (a real answer), not a parse gap. A platform without a view answers that it has none.
+  state_views:
+    bgp: show ip bgp summary
+    ospf: show ip ospf neighbor
   onboarding_doc: docs/devices/cisco-ios-xe.md
   pyats:
     os: iosxe

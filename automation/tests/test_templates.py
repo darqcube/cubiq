@@ -91,3 +91,13 @@ def test_unmatched_output_raises():
 def test_unknown_platform_raises_with_a_useful_message():
     with pytest.raises(parse.ParseError, match="not in platforms.yml"):
         parse.parse_output("nx_os", "show version", "anything")
+
+
+def test_every_platform_state_view_has_a_verified_sample():
+    """platforms.yml `state_views` (get_device_state view=bgp|ospf) are held to state_cmd's rule: a captured sample
+    that parses, so a view never answers with a parse gap on a device that has neighbours."""
+    platforms = yaml.safe_load((ROOT / "platforms.yml").read_text())
+    by_pair = {(e["platform"], e["command"]) for e in MANIFEST}
+    for name, spec in platforms.items():
+        for view, command in (spec.get("state_views") or {}).items():
+            assert (name, command) in by_pair, f"{name}: view {view} ({command!r}) has no sample in the manifest"

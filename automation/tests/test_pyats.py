@@ -105,7 +105,8 @@ def test_no_bgp_is_not_a_failure():
 def rows():
     from automation.textfsm import parse
     manifest = yaml.safe_load((ROOT / "automation/textfsm/samples/manifest.yml").read_text())
-    by = {e["platform"]: e for e in manifest["samples"]}
+    state = {n: spec["state_cmd"] for n, spec in yaml.safe_load((ROOT / "platforms.yml").read_text()).items()}
+    by = {e["platform"]: e for e in manifest["samples"] if e["command"] == state.get(e["platform"])}
     def get(platform):
         e = by[platform]
         return parse.parse_output(platform, e["command"],

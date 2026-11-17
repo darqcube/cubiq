@@ -66,6 +66,10 @@ windows, four eyes, management interfaces and alert routing are the connected pl
   `for`): now about a second. The polled alerts stay as confirmation and backstop. Not alerted, as the polled rules:
   an interface an administrator shut, a BGP neighbour shut or deleted in the configuration. Interface names are
   shortened as SNMP's `ifName` (Ethernet0/1 -> Et0/1). `ALERTMANAGER_URL` (default `http://alertmanager:9093`).
+- **`get_device_state` has views**: `view="bgp"` or `"ospf"` reads the device's neighbours live (about a second; a
+  fixed read-only command per platform in `platforms.yml` `state_views`, IOS-XE first, never one a caller sends; no
+  neighbours is an empty list, not an error). `"interfaces"` (the default) is unchanged. A platform verifies a
+  syslog alert with it before acting, without waiting for the next poll.
 
 ### Fixes
 - **No duplicate series when a device's name request times out.** Every SNMP table (interfaces, BGP, OSPF, IP SLA,

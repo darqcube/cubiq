@@ -54,19 +54,24 @@ def get_device_config(device: str) -> dict:
 
 
 @mcp.tool()
-def get_device_state(device: str) -> dict:
-    """Get parsed operational state from a device — interfaces and their status.
+def get_device_state(device: str, view: str = "interfaces") -> dict:
+    """Get parsed operational state from a device, live: its interfaces and their status, or its BGP or OSPF neighbours.
 
-    Returns structured rows parsed from the device's CLI output, not raw text.
+    Returns structured rows parsed from the device's CLI output, not raw text. About a second a device.
 
     Args:
         device: the device name as it appears in the source of truth.
+        view: "interfaces" (default), "bgp" (each neighbour and its state or prefixes received) or "ospf" (each
+              neighbour's router id, state and interface). No rows for bgp or ospf: the device has none.
     """
     identifier(device, "device")
-    result = api.get(f"/device/{device}/state")
+    if view not in ("interfaces", "bgp", "ospf"):
+        raise ValueError("view: interfaces, bgp or ospf")
+    result = api.get(f"/device/{device}/state" + ("" if view == "interfaces" else f"?view={view}"))
     return {
         "device": device,
         "platform": result["platform"],
+        "view": view,
         "command": result["command"],
         "rows": result.get("rows", []),
     }

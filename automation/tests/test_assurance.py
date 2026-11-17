@@ -20,7 +20,10 @@ sys.path.insert(0, str(ROOT))
 from automation.assurance import engine, normalise  # noqa: E402
 from automation.textfsm import parse as textfsm_parse  # noqa: E402
 
-MANIFEST = yaml.safe_load((SAMPLES / "manifest.yml").read_text())["samples"]
+# The interface-table samples only (each platform's state_cmd): the BGP and OSPF view samples are not interface rows.
+_STATE = {name: spec["state_cmd"] for name, spec in yaml.safe_load((ROOT / "platforms.yml").read_text()).items()}
+MANIFEST = [e for e in yaml.safe_load((SAMPLES / "manifest.yml").read_text())["samples"]
+            if e["command"] == _STATE.get(e["platform"])]
 
 
 def rows_for(entry):

@@ -17,6 +17,18 @@ samples:
     source: Cisco IOS-XE 17.x
     expect_keys: [interface, ip_address, status, proto]
 
+  - file: ios_xe-show-ip-bgp-summary.txt
+    platform: ios_xe
+    command: show ip bgp summary
+    source: Cisco IOS-XE 17.x (addresses replaced with documentation ranges; two neighbours set Idle and Active)
+    expect_keys: [bgp_neighbor, neighbor_as, state_or_prefixes_received]
+
+  - file: ios_xe-show-ip-ospf-neighbor.txt
+    platform: ios_xe
+    command: show ip ospf neighbor
+    source: Cisco IOS-XE 17.x (addresses replaced with documentation ranges; one neighbour set INIT)
+    expect_keys: [neighbor_id, state, interface]
+
   - file: vrp-display-interface-brief.txt
     platform: vrp
     command: display interface brief

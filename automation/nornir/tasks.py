@@ -247,8 +247,9 @@ def _get_config(device: str, nr, own: bool) -> dict:
     }
 
 
-def get_state(device: str, command: str | None = None, raw: bool = False, nr=None) -> dict:
-    """Operational state, parsed into rows by TextFSM.
+def get_state(device: str, command: str | None = None, raw: bool = False, nr=None, view: str | None = None) -> dict:
+    """Operational state, parsed into rows by TextFSM. `view` (bgp, ospf) picks the platform's fixed command for it
+    (platforms.yml state_views) instead of the interface table; its empty answer is no rows, not an error.
 
     This is what makes 'get information from the device' return data rather
     than a wall of text — and it is what the MCP layer serves to an AI.
@@ -257,12 +258,16 @@ def get_state(device: str, command: str | None = None, raw: bool = False, nr=Non
     """
     if nr is None:
         with device_lock(device):
-            return _get_state(device, get_nornir(device), command, raw, own=True)
-    return _get_state(device, nr, command, raw, own=False)
+            return _get_state(device, get_nornir(device), command, raw, own=True, view=view)
+    return _get_state(device, nr, command, raw, own=False, view=view)
 
 
-def _get_state(device: str, nr, command: str | None, raw: bool, own: bool) -> dict:
+def _get_state(device: str, nr, command: str | None, raw: bool, own: bool, view: str | None = None) -> dict:
     platform = nr.inventory.hosts[device].data["infrahub_platform"]
+    if view:
+        command = (platforms()[platform].get("state_views") or {}).get(view)
+        if not command:
+            raise DeviceError(f"{device}: no {view} view for platform {platform}")
     command = command or platforms()[platform]["state_cmd"]
 
     result = nr.run(task=netmiko_send_command, command_string=command, read_timeout=60)
@@ -279,8 +284,13 @@ def _get_state(device: str, nr, command: str | None, raw: bool, own: bool) -> di
     # parse_output raises on an empty parse rather than returning [], so a
     # missing template is visible instead of looking like an idle device.
     # The raw output is returned alongside so a template gap never loses data.
+    if view and not output.strip():   # no neighbours at all: an answer, not a parse gap
+        payload.update(rows=[], raw=output, view=view)
+        return payload
     payload["rows"] = textfsm_parse.parse_output(platform, command, output)
     payload["raw"] = output
+    if view:
+        payload["view"] = view
     return payload
 
 
