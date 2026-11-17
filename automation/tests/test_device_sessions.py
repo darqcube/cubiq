@@ -321,3 +321,19 @@ def test_a_view_runs_the_platforms_fixed_command_and_an_empty_answer_is_no_rows(
 def test_a_view_the_platform_lacks_is_refused(stub):
     with pytest.raises(tasks.DeviceError, match="no bgp view"):
         tasks.get_state("router1", view="bgp")
+
+
+def test_a_hubs_dynamic_neighbours_parse(stub, monkeypatch):
+    """A DMVPN hub prints its listen-range neighbours "*192.0.2.11": without the mark stripped the template matched
+    no line, and the hub's live BGP view answered nothing (a drill, 2026-11-17)."""
+    from pathlib import Path
+    raw = (Path(__file__).resolve().parents[2]
+           / "automation/textfsm/samples/ios_xe-show-ip-bgp-summary-dynamic.txt").read_text()
+    monkeypatch.setattr(tasks, "platforms", lambda: {"ios_xe": {
+        "netmiko_type": "cisco_xe", "textfsm_platform": "cisco_ios", "show_run": "show running-config",
+        "state_cmd": "show ip interface brief", "state_views": {"bgp": "show ip bgp summary"}}})
+    monkeypatch.setattr(FakeNornir, "run", lambda self, task=None, **kw: FakeResult(raw))
+    out = tasks.get_state("router1", view="bgp")
+    assert [(r["bgp_neighbor"], r["state_or_prefixes_received"]) for r in out["rows"]] == [
+        ("192.0.2.11", "5"), ("192.0.2.12", "5"), ("192.0.2.13", "Idle")]
+    assert out["raw"].count("*192.0.2.1") == 3, "raw keeps the device's own text"

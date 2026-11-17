@@ -10,6 +10,7 @@ automation/netmiko/, so a capability is written once.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -287,7 +288,12 @@ def _get_state(device: str, nr, command: str | None, raw: bool, own: bool, view:
     if view and not output.strip():   # no neighbours at all: an answer, not a parse gap
         payload.update(rows=[], raw=output, view=view)
         return payload
-    payload["rows"] = textfsm_parse.parse_output(platform, command, output)
+    parsed = output
+    if view == "bgp":
+        # IOS marks a dynamic neighbour (a DMVPN hub's listen range) "*10.0.0.1": the template matches no such row,
+        # and a hub answered nothing at all. The mark goes for parsing only; raw keeps it.
+        parsed = re.sub(r"(?m)^\*(?=\d)", "", output)
+    payload["rows"] = textfsm_parse.parse_output(platform, command, parsed)
     payload["raw"] = output
     if view:
         payload["view"] = view

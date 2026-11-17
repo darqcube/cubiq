@@ -1,0 +1,18 @@
+BGP router identifier 192.0.2.1, local AS number 65501
+BGP table version is 19, main routing table version 19
+6 network entries using 1488 bytes of memory
+BGP using 3000 total bytes of memory
+BGP activity 6/0 prefixes, 16/0 paths, scan interval 60 secs
+
+Neighbor        V           AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+*192.0.2.11     4        65505      34      39       19    0    0 00:00:25        5
+*192.0.2.12     4        65505   38417   38425       19    0    0 10:56:18        5
+*192.0.2.13     4        65505       0       0        1    0    0 00:00:09 Idle
+* Dynamically created based on a listen range command
+Dynamically created neighbors: 3, Subnet ranges: 1
+
+BGP peergroup BRANCH listen range group members: 
+  192.0.2.0/24 
+
+
+Total dynamically created neighbors: 3/(100 max), Subnet ranges: 1
