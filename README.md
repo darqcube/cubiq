@@ -6,6 +6,13 @@ labelled from — with MCP tools for AI agents on top. It is complete on its own
 connecting [AgenticOps](docs/how-to/connect-an-ai-platform.md) (or another AI
 platform) is optional and takes one YAML file.
 
+**Version 2.0.0** ([changelog](CHANGELOG.md)): Cubiq **authenticates and carries
+out; a connected platform decides.** Rights, approval, four eyes, change
+windows and alert policy live in the platform you connect (AgenticOps is the
+one built for it); Cubiq keeps what it needs to be safe on its own — read and
+execute scopes, staging, a one-time commit, protected configuration lines. See
+[Connecting AgenticOps](#connecting-agenticops-optional).
+
 Docker Compose, containers grouped and tagged by function, everything driven
 from YAML. Ships with **Cisco IOS-XE**, **Huawei VRP** and **MikroTik
 RouterOS**, and takes other platforms — Nokia SR Linux, Arista EOS, VyOS and
@@ -19,7 +26,7 @@ Built for demos, proofs of concept and small production networks —
 | Use | What it gives you | Way in |
 |---|---|---|
 | **Network intent** | Infrahub holds what *should* exist — devices, sites, roles, platforms. Every metric and log line is labelled from it, so all four uses agree on what a device is | Infrahub UI · GraphQL · YAML + `make seed` |
-| **Observability** | Telegraf ingests SNMP, gNMI and NetFlow/IPFIX; Logstash ingests syslog. Dashboards, alerts and log search, per device, site and role | Grafana · Prometheus and Loki APIs |
+| **Observability** | Telegraf ingests SNMP, gNMI and NetFlow/IPFIX; Logstash ingests syslog. Dashboards, alerts and log search, per device, site and role. A link, BGP session or OSPF neighbour going down is alerted **within a second** from the router's own syslog line; polling confirms it and backs it up | Grafana · Prometheus and Loki APIs |
 | **Automation** | Get and put configuration, parsed state, assurance checks, pre/post snapshots — Nornir, Netmiko, TextFSM, TTP and pyATS/Genie, across every vendor | `make` targets · REST API · [Python scripts](docs/how-to/automate-with-python.md) |
 | **AI agents (MCP)** | The same capabilities as bounded MCP tools — read-only unless writing is explicitly enabled, and then only for an execute credential, every change staged, committed once and logged. Connect AgenticOps for approvals, alert policy and Zero Trust | [MCP servers](docs/how-to/connect-an-ai-platform.md) · [changes](docs/how-to/run-changes.md) |
 
@@ -39,6 +46,80 @@ unaffected. That is a structural property, not a claim: MCP sits at the bottom
 of the dependency graph with no inbound edges — no service waits for an MCP
 container and nothing outside `mcp/` calls one — and `test_nothing_depends_on_mcp`
 checks both.
+
+## Connecting AgenticOps (optional)
+
+Cubiq is complete without it. Connecting a platform is one file, `agenticops.yml`
+([guide](docs/how-to/connect-an-ai-platform.md)), and changes nothing about what
+Cubiq does on its own. The platform you connect brings the decisions; Cubiq
+brings the data, the tools and the carrying out.
+
+```mermaid
+flowchart LR
+  subgraph AO["AgenticOps — decides (optional)"]
+    direction TB
+    IDP["Identity provider<br/>signs people in"]
+    AG["AI agents<br/>chat · investigations"]
+    CTL["Control<br/>rights · approval · four eyes<br/>change windows · alert policy"]
+    REL["Alert relay"]
+  end
+
+  subgraph CQ["Cubiq — authenticates, carries out"]
+    direction TB
+    CFG["agenticops.yml<br/>platforms · clients' scopes · alert webhook"]
+    MCP["MCP servers<br/>read tools"]
+    NM["mcp-netmiko<br/>stage · commit once"]
+    OBS["Alertmanager<br/>Logstash · Prometheus · Loki"]
+    SOT["Infrahub<br/>source of truth"]
+  end
+
+  DEV["Network devices"]
+
+  IDP -. "signed token<br/>(keys fetched over JWKS)" .-> MCP
+  AG -- "tool calls, read scope" --> MCP
+  CTL -- "stage · commit<br/>execute credential" --> NM
+  CTL -. "live device state" .-> MCP
+  NM -- "SSH" --> DEV
+  DEV == "syslog · SNMP" ==> OBS
+  OBS -- "every alert<br/>Bearer token" --> REL --> CTL
+  MCP --- SOT
+  CFG -. "who may call,<br/>with which scope" .-> MCP
+  CFG -. "where alerts go" .-> OBS
+
+  classDef ao fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#1e293b
+  classDef cq fill:#ccfbf1,stroke:#0f766e,stroke-width:2px,color:#1e293b
+  classDef dev fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e293b
+  class IDP,AG,CTL,REL ao
+  class CFG,MCP,NM,OBS,SOT cq
+  class DEV dev
+  style AO fill:#f8fafc,stroke:#475569,stroke-width:2px,color:#1e293b
+  style CQ fill:#f0fdfa,stroke:#0f766e,stroke-width:2px,color:#1e293b
+```
+
+Dashed = a credential or setting, solid = a call, thick = the device pushes to
+us. Control is the **only** caller with the execute scope, so only it can stage
+and commit a change.
+
+**Who depends on whom**
+
+| | |
+|---|---|
+| **Cubiq → AgenticOps** | Nothing. Without `agenticops.yml` Cubiq runs complete (tested). It only *sends*: every alert to the platform's webhook, with that platform's Bearer token. |
+| **AgenticOps → Cubiq** | Cubiq 2.0.0 or later (a connected platform checks the version Cubiq reports). Its tools, its alerts, and its execute credential for changes. |
+| **Several platforms** | A production platform and its staging copy can connect to one Cubiq: a token's issuer picks the platform, whose own keys check it and whose clients scope it. Two platforms never share an issuer. |
+
+**Who does what**
+
+| | Cubiq | The connected platform |
+|---|---|---|
+| **Who is calling** | Checks the token against the platform's keys; the client decides `read` or `execute` | Signs people in; holds the identity provider |
+| **Changing a device** | Stages (diff, fingerprint), commits **once** onto the configuration it was staged against, refuses protected lines, logs it | Who may propose, approve and commit; four eyes; fresh sign-in; windows; which interfaces no change may touch |
+| **Alerts** | Raises them (from SNMP polling, and from the router's syslog line within a second) and sends **every** alert | Decides which start an investigation, waits out a flap, checks the device, groups one fault into one incident |
+| **Network data** | Infrahub, Prometheus, Loki, Grafana, the devices | Reads it through the MCP tools; adds nothing to it |
+
+Transport is plain HTTP and Bearer tokens by default, with optional TLS in front;
+a Zero Trust overlay for dark ports is the platform's option, not a Cubiq
+dependency. Upgrading from 1.x: read *Upgrading* in the [changelog](CHANGELOG.md).
 
 ## Use it from Python
 

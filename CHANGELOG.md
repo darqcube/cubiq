@@ -8,7 +8,7 @@ Versions are git tags `vMAJOR.MINOR.PATCH` on `main`, newest first here.
 
 A platform that depends on a feature names the version it needs (for example: the execute scope needs 2.0.0 or later).
 
-## 2.0.0 (unreleased)
+## 2.0.0 (2026-11-19)
 
 **The stack is now Cubiq**, and it **authenticates; it no longer decides policy.** Cubiq is complete standalone; a
 platform (AgenticOps, or another of the same shape) connects through one optional file. Approval, change rights, change
