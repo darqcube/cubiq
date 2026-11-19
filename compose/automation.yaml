@@ -39,6 +39,8 @@ services:
       # execution log. docs/how-to/run-changes.md
       CHANGES_DB: /var/lib/automation/changes.db
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       # Mounted rather than baked in, so a template or task can be edited and
       # retried without a rebuild — this is the layer that gets iterated most.
       - ../automation:/app/automation

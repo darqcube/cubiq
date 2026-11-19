@@ -33,6 +33,8 @@ services:
       PLATFORM_ALERT_WEBHOOKS: ${PLATFORM_ALERT_WEBHOOKS:-}
       PLATFORM_ALERT_TOKENS: ${PLATFORM_ALERT_TOKENS:-}
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - ../observability/alertmanager/alertmanager.yml.tmpl:/src/alertmanager.yml.tmpl:ro
       - alertmanager-config:/out
       - ../observability/telegraf/generated:/generated
@@ -115,6 +117,8 @@ services:
       - --storage.tsdb.retention.time=${PROM_RETENTION:-15d}
       - --web.enable-lifecycle
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - ../observability/prometheus:/etc/prometheus:ro
       # One alert profile: standard (default) or demo. Changing it recreates Prometheus (make up).
       - ../observability/prometheus/profiles/${ALERT_PROFILE:-standard}.yml:/etc/prometheus-profile/alerts.yml:ro
@@ -142,6 +146,8 @@ services:
     environment:
       LOKI_RETENTION: ${LOKI_RETENTION:-336h}
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - ../observability/loki:/etc/loki:ro
       - loki-data:/loki
     ports:
@@ -164,6 +170,8 @@ services:
       - --config.file=/etc/alertmanager-generated/alertmanager.yml
       - --storage.path=/alertmanager
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - alertmanager-config:/etc/alertmanager:ro                  # webhook-url (config-init)
       - ../observability/telegraf/generated:/etc/alertmanager-generated:ro   # alertmanager.yml (make render)
       - alertmanager-data:/alertmanager
@@ -209,6 +217,8 @@ services:
       # for the same number (MCP_RENDER_LIMIT in mcp.yaml; pinned together).
       GF_RENDERING_CONCURRENT_RENDER_REQUEST_LIMIT: "4"
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana-data:/var/lib/grafana
     ports:
@@ -239,6 +249,9 @@ services:
     mem_limit: 1536m
     networks: [darqcube]
     restart: unless-stopped
+    volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
 
   telegraf:
     image: telegraf:${TELEGRAF_VERSION:-1.34}
@@ -266,6 +279,8 @@ services:
       GNMI_USER: ${GNMI_USER:-}
       GNMI_PASSWORD: ${GNMI_PASSWORD:-}
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - ../observability/telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
       - ../observability/telegraf/conf.d:/etc/telegraf/telegraf.d/static:ro
       # render-inventory.py output — the per-platform SNMP/gNMI configs and
@@ -301,6 +316,8 @@ services:
       LS_JAVA_OPTS: "-Xms512m -Xmx512m"
       LOKI_URL: http://loki:3100/loki/api/v1/push
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - ../observability/logstash/pipeline:/usr/share/logstash/pipeline:ro
       - ../observability/logstash/patterns:/usr/share/logstash/patterns:ro
       # Same identity table Telegraf uses, read by the translate filter.

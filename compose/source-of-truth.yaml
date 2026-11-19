@@ -45,6 +45,8 @@ services:
       NEO4J_server_memory_heap_max__size: 2G
       NEO4J_server_memory_pagecache_size: 1G
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - neo4j-data:/data
       - neo4j-logs:/logs
     expose: ["7687", "7474"]
@@ -65,6 +67,8 @@ services:
       com.darqcube.role: backend
     command: redis-server --appendonly yes
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - redis-data:/data
     expose: ["6379"]
     healthcheck:
@@ -84,6 +88,8 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-infrahub}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set in .env}
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - rabbitmq-data:/var/lib/rabbitmq
     expose: ["5672"]
     healthcheck:
@@ -105,6 +111,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       POSTGRES_DB: prefect
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       # Postgres 18+ REQUIRES the mount at /var/lib/postgresql — it puts data in
       # a version subdirectory itself. Mounting /var/lib/postgresql/data (the
       # pre-18 convention) is rejected at startup and the container never comes up.
@@ -136,6 +144,8 @@ services:
       PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://prefect:${POSTGRES_PASSWORD}@task-db:5432/prefect
       PREFECT_HOME: /prefect
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - task-manager-data:/prefect
     expose: ["4200"]
     depends_on:
@@ -169,6 +179,8 @@ services:
       # Read by render-inventory.py, which runs inside this container.
       SNMP_SHARD_SIZE: ${SNMP_SHARD_SIZE:-150}
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - infrahub-storage:/opt/infrahub/storage
       # Mounted so `make seed` / `make render` can run inside this container,
       # which already has the Infrahub SDK — no separate tooling image needed.
@@ -226,6 +238,8 @@ services:
       <<: *infrahub-env
       INFRAHUB_API_TOKEN: ${INFRAHUB_ADMIN_TOKEN:?set in .env}
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - infrahub-storage:/opt/infrahub/storage
     depends_on:
       infrahub-server: { condition: service_healthy }
@@ -260,6 +274,8 @@ services:
       FLOW_DEDICATED_FIRST: ${FLOW_DEDICATED_FIRST:-2056}
       FLOW_DEDICATED_LAST: ${FLOW_DEDICATED_LAST:-2105}
     volumes:
+      - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+      - /etc/timezone:/etc/timezone:ro
       - ../source-of-truth/scripts:/scripts:ro
       - ../platforms.yml:/platforms.yml:ro
       - ../observability/telegraf/profiles:/profiles:ro

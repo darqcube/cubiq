@@ -24,6 +24,9 @@ x-mcp: &mcp
     com.darqcube.role: mcp
   networks: [darqcube]
   restart: unless-stopped
+  volumes:
+    - /etc/localtime:/etc/localtime:ro   # the host's time zone, not UTC (docs/administration/time-zone.md)
+    - /etc/timezone:/etc/timezone:ro
 
 x-mcp-env: &mcp-env
   # This Cubiq's version (install.py, from the checkout's tag), reported at /version.

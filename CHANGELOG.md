@@ -8,6 +8,16 @@ Versions are git tags `vMAJOR.MINOR.PATCH` on `main`, newest first here.
 
 A platform that depends on a feature names the version it needs (for example: the execute scope needs 2.0.0 or later).
 
+## Unreleased
+
+### Features
+- **Containers follow the host's time zone** instead of reading UTC: every service mounts the host's `/etc/localtime`
+  and `/etc/timezone` read-only. Set the host's zone once (`timedatectl set-timezone`) and `make up`. Stored data, the
+  APIs and the alert times stay UTC. Prometheus, Alertmanager, Loki and Telegraf always write UTC in their own logs, so
+  **`make logs` now shows every service in the host's zone** (`make logs UTC=1` as written). `scripts/preflight.sh`
+  checks the two files exist, and a test fails when a service lacks the mounts.
+  [docs/administration/time-zone.md](docs/administration/time-zone.md)
+
 ## 2.0.0 (2026-11-19)
 
 **The stack is now Cubiq**, and it **authenticates; it no longer decides policy.** Cubiq is complete standalone; a

@@ -75,6 +75,14 @@ fi
 # Devices push syslog and flow over UDP. An undersized kernel receive buffer
 # drops datagrams silently — no error, no log line, no retransmit — and the
 # application's request for a bigger one is clamped without complaint.
+# Every container mounts the host's time zone files (compose/*.yaml). Docker makes a DIRECTORY of a missing bind-mount
+# source, which breaks the container's clock: say so here instead.
+echo "Time zone (the containers follow this host)"
+if [[ "$(uname)" == "Linux" ]]; then
+  if [[ -f /etc/localtime && -f /etc/timezone ]]; then ok "/etc/localtime and /etc/timezone ($(tr -d '\n' < /etc/timezone))"
+  else bad "/etc/localtime or /etc/timezone is missing — the containers mount both. Fix: sudo timedatectl set-timezone <zone>, e.g. UTC or Europe/Paris"; fi
+fi
+
 echo "Kernel (UDP receive buffers)"
 if [[ "$(uname)" == "Linux" ]]; then
   for spec in "net.core.rmem_max:8388608" "net.core.rmem_default:1048576"; do

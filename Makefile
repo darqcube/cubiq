@@ -64,8 +64,9 @@ restart: ## Restart one service:  make restart SVC=telegraf
 ps: ## Show container status, grouped by function
 	@$(COMPOSE) ps --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
 
-logs: ## Follow logs, optionally for one service:  make logs SVC=logstash
-	$(COMPOSE) logs -f --tail=100 $(SVC)
+logs: ## Follow logs in this host's time zone, optionally one service:  make logs SVC=logstash   (UTC=1: as written)
+	@if [ -n "$(UTC)" ]; then $(COMPOSE) logs -f --tail=100 $(SVC); \
+	 else $(COMPOSE) logs -f --tail=100 $(SVC) | python3 scripts/local-time-logs.py; fi
 
 MCP_SERVICES := mcp-infrahub mcp-prometheus mcp-loki mcp-grafana mcp-netmiko mcp-assurance mcp-pyats
 
