@@ -17,6 +17,13 @@ A platform that depends on a feature names the version it needs (for example: th
   internal groups are left out. A connected platform uses them for who owns which devices.
   [docs/administration/infrahub-guide.md](docs/administration/infrahub-guide.md)
 
+### Fixes
+- **A fault right after a silence is never held back.** Each syslog "down" is its own alert episode (label `episode`,
+  resolved by its own "up" line). Alerts that cleared during a silence were never notified as resolved, so
+  Alertmanager took the device's next identical alert for one it had notified and held it until its repeat interval
+  (up to an hour) — the device unseen just after its maintenance. A new episode is a new alert, sent at once.
+  [docs/install/06-grafana-alertmanager.md](docs/install/06-grafana-alertmanager.md)
+
 ## 2.1.0 (2026-11-20)
 
 **Silences for maintenance, and every container in the host's time zone.** Backward compatible with 2.0.0: a connected

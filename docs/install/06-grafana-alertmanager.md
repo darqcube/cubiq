@@ -100,6 +100,15 @@ syslog misses. Nothing is raised for an interface an administrator shut, or a
 BGP neighbour shut or deleted in the configuration. Whether to act on the
 first signal or wait for a flap is the receiving platform's policy.
 
+Each "down" is its own **episode** (label `episode`, the down line's time),
+resolved by its own "up" line, so a fault that comes back is a new alert, never
+taken by Alertmanager for one it already notified. That matters after a silence:
+alerts that clear while silenced are never notified as resolved, and without
+episodes the device's next fault was held back as a repeat for up to an hour. A
+syslog alert with no "up" line ends by itself after 15 minutes (the polled
+alert stays); a Logstash restart forgets open episodes, so their "up" lines end
+nothing and those alerts end the same way.
+
 Check it: shut a link's far end and watch Alertmanager
 (`curl -s localhost:9093/api/v2/alerts | grep syslog`) within a second or two.
 

@@ -297,6 +297,9 @@ def _alert_lines() -> str:
         at(7, "router1", "%OSPF-5-ADJCHG: Process 1, Nbr 192.0.2.1 on Ethernet0/3 from FULL to DOWN, Neighbor Down: Dead timer expired"),
         at(8, "router1", "%OSPF-5-ADJCHG: Process 1, Nbr 192.0.2.1 on Ethernet0/3 from LOADING to FULL, Loading Done"),
         at(9, "stranger", "%LINEPROTO-5-UPDOWN: Line protocol on Interface Ethernet0/1, changed state to down"),
+        at(10, "router1", "%LINEPROTO-5-UPDOWN: Line protocol on Interface Ethernet0/1, changed state to down"),
+        at(11, "router1", "%LINEPROTO-5-UPDOWN: Line protocol on Interface Ethernet0/1, changed state to up"),
+        at(12, "router1", "%BGP-5-ADJCHANGE: neighbor 192.0.2.20 Up "),
     ])
 
 
@@ -320,7 +323,7 @@ def alerts(tmp_path_factory):
          "-e", "LS_JAVA_OPTS=-Xms512m -Xmx512m", "-e", "PIPELINE_WORKERS=1", IMAGE, "logstash"],
         input=_alert_lines(), capture_output=True, text=True, timeout=300)
     events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
-    assert len(events) == 10, f"logstash: {(result.stdout + result.stderr)[-2000:]}"
+    assert len(events) == 13, f"logstash: {(result.stdout + result.stderr)[-2000:]}"
     events.sort(key=lambda e: e.get("seq", 0) if isinstance(e.get("seq"), int) else e.get("@timestamp", ""))
     return [(json.loads(e["alert_body"])[0], e["alert_state"]) if e.get("alert_body") else None for e in events]
 
@@ -329,8 +332,9 @@ def test_a_link_down_line_raises_interface_down_at_once_and_its_up_line_resolves
     (down, state), (up, up_state) = alerts[0], alerts[1]
     assert state == "firing" and up_state == "resolved"
     assert down["labels"] == {"alertname": "InterfaceDown", "device": "router1", "ifName": "Et0/1",
-                              "severity": "warning", "source": "syslog"}, "the polled alert's labels, ifName short"
-    assert up["labels"] == down["labels"], "the same labels: Alertmanager resolves the same alert"
+                              "severity": "warning", "source": "syslog", "episode": down["startsAt"]}, \
+        "the polled alert's labels, ifName short, and its episode: the down line's time"
+    assert up["labels"] == down["labels"], "the same labels and episode: Alertmanager resolves the same alert"
     assert down["endsAt"] > down["startsAt"] and up["endsAt"] == up["startsAt"]
     assert "%LINEPROTO-5-UPDOWN" in down["annotations"]["description"]
 
@@ -351,12 +355,28 @@ def test_ospf_down_raises_ospf_neighbor_down_and_full_resolves_it(alerts):
     (down, state), (up, up_state) = alerts[7], alerts[8]
     assert state == "firing" and down["labels"] == {"alertname": "OSPFNeighborDown", "device": "router1",
                                                     "router_id": "192.0.2.1", "ifName": "Et0/3",
-                                                    "severity": "critical", "source": "syslog"}
+                                                    "severity": "critical", "source": "syslog",
+                                                    "episode": down["startsAt"]}
     assert up_state == "resolved" and up["labels"] == down["labels"]
 
 
 def test_a_device_not_in_the_source_of_truth_raises_nothing(alerts):
     assert alerts[9] is None
+
+
+def test_a_fault_that_comes_back_is_a_new_episode_so_alertmanager_never_takes_it_for_a_repeat(alerts):
+    """After a silence the device's earlier alerts may have cleared unnotified; Alertmanager took the next identical
+    alert for one it had notified and held it for its repeat interval (an hour). A new episode is a new alert."""
+    (first, _), (again, state), (again_up, up_state) = alerts[0], alerts[10], alerts[11]
+    assert state == "firing" and up_state == "resolved"
+    assert again["labels"]["episode"] != first["labels"]["episode"]
+    assert again_up["labels"] == again["labels"], "its own up line resolves it, not the first episode"
+
+
+def test_an_up_line_with_no_open_episode_resolves_without_one(alerts):
+    """A Logstash restart forgets open episodes: the up line then names none (the alert ends by itself, 15 min)."""
+    up, state = alerts[12]
+    assert state == "resolved" and "episode" not in up["labels"]
 
 
 def test_the_alerts_go_straight_to_alertmanager():
