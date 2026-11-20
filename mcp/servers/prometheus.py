@@ -2,11 +2,19 @@
 from __future__ import annotations
 
 import os
+import re
+from datetime import datetime, timedelta, timezone
 
-from common import Backend, build, duration, identifier, limit
+from mcp.server.fastmcp import Context
+
+from common import Backend, BoundsError, build, duration, identifier, limit, require_scope
 
 api = Backend(os.environ.get("PROMETHEUS_URL", "http://prometheus:9090"))
+alertmanager = Backend(os.environ.get("ALERTMANAGER_URL", "http://alertmanager:9093"))
 mcp = build("prometheus")
+
+SILENCE_MAX_HOURS = 7 * 24
+SILENCE_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 # No raw-PromQL tool. Each tool below builds a bounded query from validated
 # arguments, so the blast radius of a bad call is a bad answer, not a dead TSDB.
@@ -156,3 +164,78 @@ def get_down_interfaces(max_results: int | None = None) -> dict:
             for r in rows[:n]
         ],
     }
+
+
+# --- Silences: a device's alerts quiet for a while (maintenance) ----------------------------------------------------
+# Alertmanager's own silences, so every receiver stays quiet, not one. Only by device (a matcher on its label, never a
+# regex) and only for a bounded time: a silence that outlives its reason hides the next real fault. Reading them needs
+# the read scope; making or ending one, the execute scope (a connected platform decides who may ask, Cubiq only that
+# the caller holds execute).
+
+
+def _iso(when: datetime) -> str:
+    return when.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+@mcp.tool()
+def list_silences(device: str = "") -> list[dict]:
+    """The silences in force now (Alertmanager), optionally only one device's.
+
+    Args:
+        device: a device name to narrow to, or empty for every silence in force.
+    """
+    if device:
+        identifier(device, "device")
+    out = []
+    for s in alertmanager.get("/api/v2/silences") or []:
+        if (s.get("status") or {}).get("state") != "active":
+            continue
+        devices = [m.get("value") for m in s.get("matchers") or [] if m.get("name") == "device" and not m.get("isRegex")]
+        if device and device not in devices:
+            continue
+        out.append({"id": s.get("id"), "devices": devices, "starts_at": s.get("startsAt"), "ends_at": s.get("endsAt"),
+                    "created_by": s.get("createdBy"), "comment": s.get("comment")})
+    return out
+
+
+@mcp.tool()
+def silence_device(device: str, hours: int, reason: str, ctx: Context, requested_by: str = "") -> dict:
+    """Silence every alert of one device for a while (maintenance): no receiver is notified until it ends.
+
+    Needs the execute scope. At most 7 days; end it early with end_silence.
+
+    Args:
+        device: the device name, as its alerts label it.
+        hours: how long, 1 to 168.
+        reason: why, in a few words (shown with the silence).
+        requested_by: the person the caller acts for, if any (kept with the silence).
+    """
+    who = require_scope(ctx, "execute")
+    identifier(device, "device")
+    if not isinstance(hours, int) or not 1 <= hours <= SILENCE_MAX_HOURS:
+        raise BoundsError(f"hours: 1 to {SILENCE_MAX_HOURS}")
+    reason = " ".join(str(reason or "").split())[:200]
+    if len(reason) < 3:
+        raise BoundsError("reason: a few words")
+    requested_by = " ".join(str(requested_by or "").split())[:64]
+    now = datetime.now(timezone.utc)
+    ends = now + timedelta(hours=hours)
+    created_by = f"{requested_by} via {who['user']}" if requested_by else who["user"]
+    made = alertmanager.post("/api/v2/silences", json={
+        "matchers": [{"name": "device", "value": device, "isRegex": False, "isEqual": True}],
+        "startsAt": _iso(now), "endsAt": _iso(ends), "createdBy": created_by[:120], "comment": reason})
+    return {"id": (made or {}).get("silenceID"), "device": device, "ends_at": _iso(ends), "created_by": created_by}
+
+
+@mcp.tool()
+def end_silence(silence_id: str, ctx: Context) -> dict:
+    """End a silence before its time (its device's alerts notify again). Needs the execute scope.
+
+    Args:
+        silence_id: the id silence_device or list_silences gave.
+    """
+    who = require_scope(ctx, "execute")
+    if not SILENCE_ID.fullmatch(silence_id or ""):
+        raise BoundsError(f"invalid silence id: {silence_id!r}")
+    alertmanager.delete(f"/api/v2/silence/{silence_id}")
+    return {"id": silence_id, "ended": True, "by": who["user"]}

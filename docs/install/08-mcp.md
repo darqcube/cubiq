@@ -11,7 +11,7 @@ loses a feature — nothing in the stack depends on them.
 | Server | Port | Backend | Tools |
 |---|---|---|---|
 | `mcp-infrahub` | 9001 | Infrahub | 8 |
-| `mcp-prometheus` | 9002 | Prometheus | 5 |
+| `mcp-prometheus` | 9002 | Prometheus (and Alertmanager's silences) | 8 |
 | `mcp-loki` | 9003 | Loki | 3 |
 | `mcp-grafana` | 9004 | Grafana | 2 (3 with graphs on) |
 | `mcp-netmiko` | 9005 | automation API | 2 (3 with writes on) |
@@ -85,6 +85,14 @@ is archived first, and the size is capped by `MAX_CONFIG_LINES`:
 [../how-to/run-changes.md](../how-to/run-changes.md). The automation API
 underneath has no authentication of its own, so it is published on loopback
 only (`AUTOMATION_BIND_IP`).
+
+**Silences** (`mcp-prometheus`): `list_silences` (read) shows the silences in
+force; `silence_device` quiets one device's alerts at Alertmanager for 1 to 168
+hours, so no receiver is notified (maintenance), and `end_silence` ends one early.
+Making or ending a silence needs the execute scope, checked before Alertmanager is
+called. Only by the `device` label, never a regex; the reason and who asked are
+kept with the silence. A connected platform decides who may ask (AgenticOps: an
+incident resolved as Maintenance); Cubiq only that the caller holds execute.
 
 ## Verify
 

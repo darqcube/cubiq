@@ -187,6 +187,9 @@ class Backend:
     def post(self, path: str, json: dict | None = None) -> Any:
         return self._request("POST", path, json=json)
 
+    def delete(self, path: str) -> Any:
+        return self._request("DELETE", path)
+
     def get_bytes(self, path: str, params: dict | None = None, *, max_bytes: int,
                   content_type: str) -> bytes:
         """Raw bytes of one expected type — a rendered image, never JSON.

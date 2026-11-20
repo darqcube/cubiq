@@ -182,6 +182,18 @@ def test_every_change_tool_checks_the_execute_scope_first():
         assert body.index('require_scope(ctx, "execute")') < body.index("_call("), tool
 
 
+def test_silences_need_the_execute_scope_and_are_bounded():
+    """Making or ending a silence: the execute scope first, before Alertmanager is called; one device, never a regex,
+    for at most 7 days (a silence that outlives its reason hides the next real fault)."""
+    source = (SERVERS / "prometheus.py").read_text()
+    for tool in ("silence_device", "end_silence"):
+        body = source[source.index(f"def {tool}("):].split("\n@mcp.tool()")[0]
+        assert body.index('require_scope(ctx, "execute")') < body.index("alertmanager."), tool
+    assert '"isRegex": False' in source and "SILENCE_MAX_HOURS = 7 * 24" in source
+    assert "def list_silences(device: str" in source and "require_scope" not in source[
+        source.index("def list_silences("):source.index("def silence_device(")], "reading needs read only"
+
+
 def test_keep_alive_outlives_a_proxy_pool():
     """uvicorn's 5 s default closes idle connections a gateway still has
     pooled; the next request on one fails with "connection closed before
