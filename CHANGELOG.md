@@ -8,7 +8,10 @@ Versions are git tags `vMAJOR.MINOR.PATCH` on `main`, newest first here.
 
 A platform that depends on a feature names the version it needs (for example: the execute scope needs 2.0.0 or later).
 
-## Unreleased
+## 2.1.0 (2026-11-20)
+
+**Silences for maintenance, and every container in the host's time zone.** Backward compatible with 2.0.0: a connected
+platform needs nothing new unless it silences a device (the execute scope, as for changes).
 
 ### Features
 - **Silences at Alertmanager** (mcp-prometheus): `list_silences` (read), `silence_device` and `end_silence` (the
@@ -24,6 +27,13 @@ A platform that depends on a feature names the version it needs (for example: th
   **`make logs` now shows every service in the host's zone** (`make logs UTC=1` as written). `scripts/preflight.sh`
   checks the two files exist, and a test fails when a service lacks the mounts.
   [docs/administration/time-zone.md](docs/administration/time-zone.md)
+
+### Upgrading from 2.0.0
+1. **`git fetch --tags && git checkout v2.1.0`.**
+2. **Optional, the host's time zone, once:** `sudo timedatectl set-timezone <Area/City>`. Without it the containers
+   keep UTC, as before.
+3. **Apply:** `python3 install.py --step 2` (it writes `CUBIQ_VERSION` and keeps the platforms' alert tokens), then
+   `make up` (every service gains the time-zone mounts) and `make mcp-apply` (the silence tools).
 
 ## 2.0.0 (2026-11-19)
 

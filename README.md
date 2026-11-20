@@ -6,12 +6,13 @@ labelled from — with MCP tools for AI agents on top. It is complete on its own
 connecting [AgenticOps](docs/how-to/connect-an-ai-platform.md) (or another AI
 platform) is optional and takes one YAML file.
 
-**Version 2.0.0** ([changelog](CHANGELOG.md)): Cubiq **authenticates and carries
+**Version 2.1.0** ([changelog](CHANGELOG.md)): Cubiq **authenticates and carries
 out; a connected platform decides.** Rights, approval, four eyes, change
 windows and alert policy live in the platform you connect (AgenticOps is the
 one built for it); Cubiq keeps what it needs to be safe on its own — read and
 execute scopes, staging, a one-time commit, protected configuration lines. See
-[Connecting AgenticOps](#connecting-agenticops-optional).
+[Connecting AgenticOps](#connecting-agenticops-optional). New in 2.1: silences
+for maintenance at Alertmanager, and every container in the host's time zone.
 
 Docker Compose, containers grouped and tagged by function, everything driven
 from YAML. Ships with **Cisco IOS-XE**, **Huawei VRP** and **MikroTik
