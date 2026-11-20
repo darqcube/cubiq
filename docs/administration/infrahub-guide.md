@@ -83,6 +83,16 @@ Defined in `source-of-truth/schema/darqcube.yml`, loaded with `make schema`.
 | `snmp_security` | Dropdown | `auth_priv` (default), `auth_no_priv` — only for images that cannot encrypt SNMP, e.g. Cisco L2 IOL |
 | `flow_enabled` | Boolean | default `false` |
 
+### Device groups (optional)
+
+Infrahub's own **standard groups** (Groups in its UI) of devices: made in the UI
+or in a `groups:` file (`name`, optional `description`, `devices` by name;
+`source-of-truth/devices/examples/groups.yml`). `make seed` makes a group's
+device members exactly the file's list and leaves members that are not devices
+alone. A device may be in several groups. A connected platform reads them with
+`list_device_groups`, for example to route a device's incidents to the team
+that owns its group.
+
 ### Prefix, Host, Application, Service (optional)
 
 What the network serves — leave them out if you only model devices.

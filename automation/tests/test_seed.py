@@ -246,7 +246,7 @@ def test_shipped_examples_cover_every_section(seed):
     """The examples are someone's starting point for the service model too."""
     sections, errors = seed.load_records(EXAMPLES)
     assert not errors
-    for section in ("cables", "prefixes", "hosts", "applications", "services"):
+    for section in ("cables", "prefixes", "hosts", "applications", "services", "groups"):
         assert sections[section], f"examples/ has no {section}"
 
 
@@ -376,3 +376,36 @@ def test_one_port_carries_one_cable(seed, tmp_path):
     errors = check(seed, tmp_path, cabled(CABLE, twin))
     assert any("router1 Gi0/1, already used by cable 'router1-sw1'" in e for e in errors)
     assert check(seed, tmp_path, cabled(CABLE, {**twin, "status": "decommissioned"})) == []
+
+
+# --- device groups (Infrahub's standard groups) ------------------------------
+
+def test_a_device_group_of_known_devices_passes(seed, tmp_path):
+    group = {"name": "core", "description": "The core", "devices": ["router1"]}
+    assert check(seed, tmp_path, {"sites": [SITE], "devices": [DEVICE], "groups": [group]}) == []
+
+
+def test_a_device_group_naming_an_unknown_device_is_rejected(seed, tmp_path):
+    errors = check(seed, tmp_path, {"sites": [SITE], "devices": [DEVICE],
+                                     "groups": [{"name": "core", "devices": ["router1", "router9"]}]})
+    assert any("device 'router9' does not exist" in e for e in errors)
+
+
+def test_a_device_group_field_outside_its_keys_is_rejected(seed, tmp_path):
+    errors = check(seed, tmp_path, {"sites": [SITE], "devices": [DEVICE],
+                                     "groups": [{"name": "core", "owner": "netops", "devices": ["router1"]}]})
+    assert any("unknown field 'owner'" in e for e in errors)
+
+
+def test_a_device_group_needs_a_list_without_repeats(seed, tmp_path):
+    errors = check(seed, tmp_path, {"sites": [SITE], "devices": [DEVICE],
+                                     "groups": [{"name": "a", "devices": "router1"},
+                                                {"name": "b", "devices": ["router1", "router1"]}]})
+    assert any("devices must be a list" in e for e in errors)
+    assert any("listed twice" in e for e in errors)
+
+
+def test_groups_are_infrahubs_own_and_written_after_the_devices(seed):
+    """Not a kind of ours: Infrahub's standard groups, so the UI's groups and the seeded ones are one thing."""
+    assert seed.GROUP_KIND == "CoreStandardGroup"
+    assert "groups" not in [name for name, _ in seed.SECTIONS]

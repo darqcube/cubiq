@@ -61,6 +61,14 @@ SECTIONS = (
     ("services", "NetworkService"),
 )
 
+# Device groups: Infrahub's own standard groups (CoreStandardGroup), so a group made in Infrahub's UI and one made
+# here are the same thing. Not a schema kind of ours, so not in SECTIONS: written after the devices, by apply_groups,
+# from records of exactly these keys. A connected platform reads them (mcp-infrahub list_device_groups) to know who
+# owns which devices.
+GROUPS = "groups"
+GROUP_KIND = "CoreStandardGroup"
+GROUP_KEYS = {"name", "description", "devices"}
+
 # Attributes that record what was OBSERVED on the device rather than intent —
 # written by operations (`make pin-host-keys`), not by the YAML. A record that
 # leaves one out keeps the value in Infrahub instead of resetting it, or every
@@ -111,6 +119,7 @@ def load_records(directory: str | Path) -> tuple[dict[str, list], list[str]]:
     ({section: [(filename, record), ...]}, errors).
     """
     sections: dict[str, list] = {name: [] for name, _ in SECTIONS}
+    sections[GROUPS] = []
     seen: dict[tuple[str, str], str] = {}
     errors: list[str] = []
 
@@ -280,6 +289,27 @@ def check_relations(sections: dict) -> list[str]:
     return errors
 
 
+def check_groups(records: list, devices: set[str]) -> list[str]:
+    """Device groups: only their own keys, a list of devices that exist (here or in Infrahub)."""
+    errors: list[str] = []
+    for src, rec in records:
+        where = f"{src}: group '{rec['name']}'"
+        for key in sorted(set(rec) - GROUP_KEYS):
+            errors.append(f"{where}: unknown field '{key}' (have: {', '.join(sorted(GROUP_KEYS))})")
+        if "description" in rec and not isinstance(rec["description"], str):
+            errors.append(f"{where}: description must be text")
+        members = rec.get("devices", [])
+        if not isinstance(members, list):
+            errors.append(f"{where}: devices must be a list")
+            continue
+        for device in members:
+            if str(device) not in devices:
+                errors.append(f"{where}: device '{device}' does not exist — add it under 'devices:'")
+        if len({str(d) for d in members}) != len(members):
+            errors.append(f"{where}: a device is listed twice")
+    return errors
+
+
 def validate(sections: dict, views: dict, known: dict, platforms: dict) -> list[str]:
     """Every problem in every record. Empty means safe to write.
 
@@ -340,6 +370,7 @@ def validate(sections: dict, views: dict, known: dict, platforms: dict) -> list[
             elif kind == "NetworkPrefix":
                 errors.extend(f"{where}: {p}" for p in check_prefix(rec))
     errors.extend(check_relations(sections))
+    errors.extend(check_groups(sections.get(GROUPS, []), known.get("NetworkDevice", set())))
     return errors
 
 
@@ -408,6 +439,35 @@ def apply(client, sections: dict, views: dict, existing: dict, ids: dict) -> dic
     return counts
 
 
+def apply_groups(client, records: list, existing: dict, device_ids: dict) -> int:
+    """Write the device groups. A group's DEVICE members become exactly the list (the YAML is the whole record);
+    members that are not devices (added in Infrahub's UI) are left as they are."""
+    device_id_set = set(device_ids.values())
+    for _, rec in records:
+        name = str(rec["name"])
+        wanted = {device_ids[str(d)] for d in rec.get("devices", [])}
+        node = existing.get(name)
+        if node is None:
+            node = client.create(kind=GROUP_KIND, branch=BRANCH, name=name, description=rec.get("description", ""))
+            node.save()
+            node = client.get(kind=GROUP_KIND, branch=BRANCH, id=node.id, include=["members"])
+            action = "created"
+        else:
+            node.description.value = rec.get("description", "")
+            action = "updated"
+        manager = node.members
+        if not manager.initialized:
+            manager.fetch()
+        current = set(manager.peer_ids) & device_id_set
+        for peer_id in current - wanted:
+            manager.remove(peer_id)
+        for peer_id in wanted - current:
+            manager.add(peer_id)
+        node.save()
+        print(f"  {'group':<12}{name:<24}{action}")
+    return len(records)
+
+
 def main() -> int:
     if not TOKEN:
         print("!! INFRAHUB_API_TOKEN not set", file=sys.stderr)
@@ -462,6 +522,8 @@ def main() -> int:
         known[kind] = set(ids[kind])
     for section, kind in SECTIONS:
         known[kind] |= {str(rec["name"]) for _, rec in sections[section]}
+    groups = ({n.name.value: n for n in client.all(kind=GROUP_KIND, branch=BRANCH, include=["members"])}
+              if sections[GROUPS] else {})
 
     errors = validate(sections, views, known, platforms)
     if errors:
@@ -469,6 +531,8 @@ def main() -> int:
 
     print(f"Seeding Infrahub branch '{BRANCH}' from {DEVICES_DIR}:")
     counts = apply(client, sections, views, existing, ids)
+    if sections[GROUPS]:
+        counts[GROUPS] = apply_groups(client, sections[GROUPS], groups, ids["NetworkDevice"])
     summary = ", ".join(f"{n} {section}" for section, n in counts.items())
     print(f"\nseeded {summary} — now run: make render")
     return 0

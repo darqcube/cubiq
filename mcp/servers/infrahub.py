@@ -27,15 +27,21 @@ _DEVICE_FIELDS = """
   auto_investigate_protocols { value }
   site { node { name { value } site_type { value } region { value } } }
   tags { edges { node { name { value } } } }
+  member_of_groups { edges { node { ... on CoreStandardGroup { name { value } } } } }
 """
 
 
 def _devices(edges: list) -> list[dict]:
-    """Device nodes, with tags as a plain list of names rather than edges."""
+    """Device nodes, with tags and device groups as plain lists of names rather than edges.
+
+    Groups are Infrahub's standard groups the device is a member of (made in the UI or by `make seed`'s `groups:`);
+    Infrahub's own internal groups (generated, query groups) answer the fragment empty and are left out."""
     devices = []
     for edge in edges:
         node = edge["node"]
         node["tags"] = [t["node"]["name"] for t in (node.get("tags") or {}).get("edges", [])]
+        node["groups"] = sorted(g["node"]["name"] for g in (node.pop("member_of_groups", None) or {}).get("edges", [])
+                                if (g.get("node") or {}).get("name"))
         devices.append(node)
     return devices
 
@@ -94,6 +100,28 @@ def get_site_devices(site: str) -> dict:
     )
     devices = _devices(data["NetworkDevice"]["edges"])
     return {"site": site, "count": len(devices), "devices": devices}
+
+
+@mcp.tool()
+def list_device_groups() -> dict:
+    """List the device groups in the source of truth and the devices in each.
+
+    Device groups are Infrahub's standard groups (made in Infrahub's UI, or by `make seed` from a `groups:` file). A
+    connected platform uses them for who owns which devices; a device's own groups are in get_device's `groups`. Only
+    devices are listed as members; a group holding no device is listed with an empty list.
+    """
+    data = _query(
+        "{ CoreStandardGroup { edges { node { name { value } description { value } "
+        "members { edges { node { ... on NetworkDevice { name { value } } } } } } } } }"
+    )
+    groups = []
+    for edge in data["CoreStandardGroup"]["edges"]:
+        node = edge["node"]
+        devices = sorted(m["node"]["name"] for m in (node.get("members") or {}).get("edges", [])
+                         if (m.get("node") or {}).get("name"))
+        groups.append({"name": node["name"], "description": node.get("description") or "", "devices": devices})
+    groups.sort(key=lambda g: g["name"])
+    return {"count": len(groups), "groups": groups}
 
 
 # --- what the network serves: applications, services, hosts -----------------

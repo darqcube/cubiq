@@ -10,7 +10,7 @@ loses a feature — nothing in the stack depends on them.
 
 | Server | Port | Backend | Tools |
 |---|---|---|---|
-| `mcp-infrahub` | 9001 | Infrahub | 8 |
+| `mcp-infrahub` | 9001 | Infrahub | 9 |
 | `mcp-prometheus` | 9002 | Prometheus (and Alertmanager's silences) | 8 |
 | `mcp-loki` | 9003 | Loki | 3 |
 | `mcp-grafana` | 9004 | Grafana | 2 (3 with graphs on) |
@@ -85,6 +85,12 @@ is archived first, and the size is capped by `MAX_CONFIG_LINES`:
 [../how-to/run-changes.md](../how-to/run-changes.md). The automation API
 underneath has no authentication of its own, so it is published on loopback
 only (`AUTOMATION_BIND_IP`).
+
+**Device groups** (`mcp-infrahub`, read): `list_device_groups` lists Infrahub's
+standard groups and the devices in each (made in Infrahub's UI, or by `make seed`
+from a `groups:` file); `get_device` gives a device's own `groups`. A connected
+platform uses them to know which team owns which devices. Infrahub's internal
+groups are left out, and only devices are listed as members.
 
 **Silences** (`mcp-prometheus`): `list_silences` (read) shows the silences in
 force; `silence_device` quiets one device's alerts at Alertmanager for 1 to 168

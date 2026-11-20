@@ -221,3 +221,39 @@ def test_render_tool_takes_no_dashboard_panel_or_query():
         assert not re.search(r"\b(uid|panel|panel_id|dashboard|query|url)\s*:", sig), sig
     assert "interface_name(interface)" in source and 'identifier(device, "device")' in source
     assert 'identifier(link_a, "link_a")' in source and 'identifier(link_b, "link_b")' in source
+
+
+def test_device_groups_are_read_with_their_devices_only():
+    """list_device_groups and get_device's groups: Infrahub's standard groups only (the GraphQL fragment answers empty
+    for its internal ones), and a group's members only where they are devices."""
+    if not _image_exists():
+        pytest.skip(f"{IMAGE} not built — run: docker compose build mcp-infrahub")
+    script = (
+        "import json\n"
+        "from servers import infrahub as i\n"
+        "def fake(gql, variables=None):\n"
+        "    if gql.lstrip().startswith('{ CoreStandardGroup'):\n"
+        "        return {'CoreStandardGroup': {'edges': [\n"
+        "            {'node': {'name': 'west', 'description': 'West', 'members': {'edges': [\n"
+        "                {'node': {'name': 'r2'}}, {'node': {}}, {'node': {'name': 'r1'}}]}}},\n"
+        "            {'node': {'name': 'empty', 'description': None, 'members': {'edges': []}}}]}}\n"
+        "    assert '... on CoreStandardGroup' in gql\n"
+        "    return {'NetworkDevice': {'edges': [{'node': {'name': 'r1', 'tags': {'edges': []},\n"
+        "        'member_of_groups': {'edges': [{'node': {'name': 'west'}}, {'node': {}}, {'node': {'name': 'core'}}]}}}]}}\n"
+        "i._query = fake\n"
+        "import asyncio, inspect\n"
+        "def call(f, *a):\n"
+        "    r = f(*a)\n"
+        "    return asyncio.run(r) if inspect.isawaitable(r) else r\n"
+        "print(json.dumps([call(i.list_device_groups), call(i.get_device, 'r1')]))\n"
+    )
+    out = subprocess.run(
+        ["docker", "run", "--rm", "-e", "INFRAHUB_API_TOKEN=x", "-e", "MCP_AUTH_TOKEN=test",
+         IMAGE, "python", "-c", script], capture_output=True, text=True, timeout=120)
+    lines = out.stdout.strip().splitlines()
+    assert lines, out.stderr[-800:]
+    groups, device = json.loads(lines[-1])
+    assert groups == {"count": 2, "groups": [{"name": "empty", "description": "", "devices": []},
+                                             {"name": "west", "description": "West", "devices": ["r1", "r2"]}]}
+    assert device["found"] is True and device["groups"] == ["core", "west"]
+    assert "member_of_groups" not in device

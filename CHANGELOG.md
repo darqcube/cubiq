@@ -8,6 +8,15 @@ Versions are git tags `vMAJOR.MINOR.PATCH` on `main`, newest first here.
 
 A platform that depends on a feature names the version it needs (for example: the execute scope needs 2.0.0 or later).
 
+## Unreleased
+
+### Features
+- **Device groups** from Infrahub's own standard groups: `make seed` writes a `groups:` file (`name`, `description`,
+  `devices`; a group's device members become exactly the list, other members are left alone), and mcp-infrahub reads
+  them: `list_device_groups` (each group and its devices) and a device's `groups` in `get_device`. Infrahub's
+  internal groups are left out. A connected platform uses them for who owns which devices.
+  [docs/administration/infrahub-guide.md](docs/administration/infrahub-guide.md)
+
 ## 2.1.0 (2026-11-20)
 
 **Silences for maintenance, and every container in the host's time zone.** Backward compatible with 2.0.0: a connected

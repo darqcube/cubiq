@@ -1,0 +1,26 @@
+# ---------------------------------------------------------------------------
+# EXAMPLE device groups. Never seeded from here — copy it first:
+#
+#   cp source-of-truth/devices/examples/*.yml source-of-truth/devices/
+#
+# Optional. Each group becomes one of Infrahub's own standard groups (Groups in
+# Infrahub's UI), so a group made there and one made here are the same thing.
+# A connected platform reads them through mcp-infrahub (list_device_groups, and
+# each device's `groups` in get_device), e.g. to know which team owns which
+# devices. A device may be in several groups.
+#
+# Fields:
+#   name         the group's name (unique)
+#   description  optional, free text
+#   devices      the devices in it, by name; `make seed` makes the group's device
+#                members exactly this list (members that are not devices, added
+#                in Infrahub's UI, are left as they are)
+# ---------------------------------------------------------------------------
+groups:
+  - name: core-routers
+    description: The core routers
+    devices: [router1]
+
+  - name: access-switches
+    description: Switches at the edge
+    devices: [sw-hw-01, mt-01]
