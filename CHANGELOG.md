@@ -16,6 +16,8 @@ A platform that depends on a feature names the version it needs (for example: th
   is notified during maintenance; only by the `device` label, never a regex; the reason and who asked kept with it.
   `ALERTMANAGER_URL` (default `http://alertmanager:9093`). Tested inside the image against a recorder
   (`test_silences_mcp.py`). [docs/install/08-mcp.md](docs/install/08-mcp.md)
+- A silence names who asked through a client by the client's name when its token carries no username (a service
+  account's), never a bare id: "noc-manager via agenticops-control", not "… via 0efb837e-…" (seen in the lab).
 - **Containers follow the host's time zone** instead of reading UTC: every service mounts the host's `/etc/localtime`
   and `/etc/timezone` read-only. Set the host's zone once (`timedatectl set-timezone`) and `make up`. Stored data, the
   APIs and the alert times stay UTC. Prometheus, Alertmanager, Loki and Telegraf always write UTC in their own logs, so

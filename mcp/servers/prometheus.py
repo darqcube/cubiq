@@ -220,7 +220,10 @@ def silence_device(device: str, hours: int, reason: str, ctx: Context, requested
     requested_by = " ".join(str(requested_by or "").split())[:64]
     now = datetime.now(timezone.utc)
     ends = now + timedelta(hours=hours)
-    created_by = f"{requested_by} via {who['user']}" if requested_by else who["user"]
+    # A service account's token may carry no username: then its client's name, never a bare id nobody can read
+    # (the lab, 2026-11-20: "ops-engineer via 0efb837e-04a3-…").
+    caller_name = who["user"] if who["user"] != who.get("sub") else (who.get("agent") or who["user"])
+    created_by = f"{requested_by} via {caller_name}" if requested_by else caller_name
     made = alertmanager.post("/api/v2/silences", json={
         "matchers": [{"name": "device", "value": device, "isRegex": False, "isEqual": True}],
         "startsAt": _iso(now), "endsAt": _iso(ends), "createdBy": created_by[:120], "comment": reason})

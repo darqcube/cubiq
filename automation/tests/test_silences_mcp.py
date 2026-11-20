@@ -25,6 +25,7 @@ EXPECTED = [
     "an_execute_client_silences_one_device_for_a_bounded_time", "a_read_client_is_refused_before_alertmanager_is_called",
     "the_time_and_the_reason_are_bounded", "a_read_client_lists_the_silences_in_force",
     "an_execute_client_ends_one_and_a_bad_id_never_reaches_alertmanager",
+    "a_client_without_a_username_is_named_by_its_client_never_its_id",
 ]
 
 

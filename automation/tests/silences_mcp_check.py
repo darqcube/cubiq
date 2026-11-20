@@ -43,10 +43,10 @@ SILENCE = "0b6c8f8e-2b5e-4c1e-9a2f-6b7a3c1d9e01"
 results: dict[str, list] = {}
 
 
-def token(azp: str) -> str:
+def token(azp: str, username: bool = True) -> str:
     now = int(time.time())
-    claims = {"iss": ISSUER, "aud": "cubiq", "sub": "svc", "preferred_username": f"service-account-{azp}", "azp": azp,
-              "iat": now, "exp": now + 300}
+    claims = {"iss": ISSUER, "aud": "cubiq", "sub": "0efb837e-04a3-4c1e-9a2f-6b7a3c1d9e01", "azp": azp,
+              "iat": now, "exp": now + 300, **({"preferred_username": f"service-account-{azp}"} if username else {})}
     return "Bearer " + jwt.encode(claims, KEY, algorithm="RS256", headers={"kid": "test-key"})
 
 
@@ -148,6 +148,12 @@ with TestClient(APP) as c:
         ids = [s["id"] for s in (body or [])]
         return (not out.get("isError") and ids == [SILENCE]), out
 
+    def a_client_without_a_username_is_named_by_its_client_never_its_id():
+        AM.calls.clear()
+        bare = session(c, token("platform-control", username=False))
+        call(c, bare, "silence_device", {"device": "router1", "hours": 1, "reason": "Maintenance", "requested_by": "noc-manager"})
+        return AM.calls[-1][2]["createdBy"] == "noc-manager via platform-control", AM.calls[-1][2]["createdBy"]
+
     def an_execute_client_ends_one_and_a_bad_id_never_reaches_alertmanager():
         AM.calls.clear()
         bad = call(c, execute, "end_silence", {"silence_id": "../silences"})
@@ -157,6 +163,7 @@ with TestClient(APP) as c:
 
     for fn in (an_execute_client_silences_one_device_for_a_bounded_time, a_read_client_is_refused_before_alertmanager_is_called,
                the_time_and_the_reason_are_bounded, a_read_client_lists_the_silences_in_force,
+               a_client_without_a_username_is_named_by_its_client_never_its_id,
                an_execute_client_ends_one_and_a_bad_id_never_reaches_alertmanager):
         check(fn.__name__, fn)
 
