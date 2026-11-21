@@ -8,7 +8,10 @@ Versions are git tags `vMAJOR.MINOR.PATCH` on `main`, newest first here.
 
 A platform that depends on a feature names the version it needs (for example: the execute scope needs 2.0.0 or later).
 
-## Unreleased
+## 2.2.0 (2026-11-21)
+
+**Device groups from Infrahub, and a fault right after a silence never held back.** Backward compatible with
+2.1.0: a connected platform needs nothing new unless it reads device groups (`list_device_groups`, a device's `groups`).
 
 ### Features
 - **Device groups** from Infrahub's own standard groups: `make seed` writes a `groups:` file (`name`, `description`,
@@ -23,6 +26,16 @@ A platform that depends on a feature names the version it needs (for example: th
   Alertmanager took the device's next identical alert for one it had notified and held it until its repeat interval
   (up to an hour) — the device unseen just after its maintenance. A new episode is a new alert, sent at once.
   [docs/install/06-grafana-alertmanager.md](docs/install/06-grafana-alertmanager.md)
+
+### Upgrading from 2.1.0
+1. **`git fetch --tags && git checkout v2.2.0`.**
+2. **Apply:** `python3 install.py --step 2` (it writes `CUBIQ_VERSION` and keeps the platforms' alert tokens), then
+   `make up` and `make mcp-apply` (the device-group tools on mcp-infrahub).
+3. **The syslog episodes:** `docker compose restart logstash`. Its pipeline is bind-mounted, and `make up` keeps the
+   running one.
+4. **Optional, device groups:** write `source-of-truth/devices/groups.yml` (the example:
+   `source-of-truth/devices/examples/groups.yml`), then `make seed`. Without it, `list_device_groups` lists Infrahub's
+   own standard groups, if any.
 
 ## 2.1.0 (2026-11-20)
 
